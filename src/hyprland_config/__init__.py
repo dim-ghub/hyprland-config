@@ -5,6 +5,7 @@ from pathlib import Path
 
 from hyprland_config._bind import BindData, is_bind_keyword, parse_bind_line
 from hyprland_config._expr import ExprError, evaluate_expression
+from hyprland_config._lua import serialize_lua
 from hyprland_config._migrate import (
     ConfigDeprecation,
     MigrationResult,
@@ -134,5 +135,6 @@ __all__ = [
     "parse_to_dict",
     "parse_file",
     "parse_string",
+    "serialize_lua",
     "value_to_conf",
 ]

@@ -293,6 +293,19 @@ class Document:
         """Reconstruct the original file text from line nodes."""
         return "".join(line.raw for line in self.lines)
 
+    def serialize_lua(self) -> str:
+        """Render this document as a Hyprland Lua config (v0.55.0+).
+
+        One-way emitter: comments, blanks, and variables aren't preserved,
+        and only Phase-1 keywords (``env``, ``monitor``, ``bezier``,
+        ``animation``) plus category-keyed assignments are translated.
+        Keywords outside that set appear as TODO markers in the output.
+        See ``hyprland_config._lua`` for details and coverage roadmap.
+        """
+        from hyprland_config._lua import serialize_lua
+
+        return serialize_lua(self)
+
     # -- Query API --
 
     def get(
