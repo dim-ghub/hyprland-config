@@ -1,0 +1,169 @@
+# Changelog
+
+All notable changes to hyprland-config will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.5.0] - 2026-05-14
+
+### Added
+
+- Lua support: `serialize_lua()` emits Lua configs, `load_lua()` reads Lua configs back into `Document`, and `load_any()` / `serialize_any()` auto-select format by file suffix
+- Lua output covers bind variants, rules (`windowrule`/`windowrulev2`/`layerrule`), `workspace`, `gesture`, `permission`, `device`, `exec` family, `unbind`, and plugin loading
+- `serialize_lua_tree()` emits one `.lua` file per sourced document and wires parents via `dofile(...)`, including `.conf.d` -> `.lua.d` remapping
+- Hyprlang -> Lua converter: `analyze_conversion()` produces a dry-run `ConversionPlan` (with `UnmappedLine` reports); `execute_conversion()` commits it as an all-or-nothing batch via staged writes and returns a `ConversionResult`
+- `serialize_hyprlang()` reconstructs a `Document`'s Hyprlang text from its line nodes (explicit replacement for `Document.serialize()`)
+- `load_lua()` requires a system `lua` interpreter on `PATH`; raises `LuaReaderError` (subclass of `ParseError`) when missing or when the user's Lua config fails to execute
+- New public helpers: `keyword_to_lua()`, `emit_keyword_line()`, `emit_option_assignment()`, `dispatch_to_lua()`, `define_submap_to_lua()`, `normalize_gradient_string()`, `default_config_dir()`, `default_hyprlang_entrypoint()`, `default_lua_entrypoint()`, `default_entrypoint()`, and `parse_version()`
+- New public types: `LuaFile` (per-file output of `serialize_lua_tree`), `ConversionPlan`, `ConversionResult`, `UnmappedLine`, `LuaReaderError`
+- New migration coverage for Hyprland v0.55 (`dwindle:pseudotile`, `misc:vfr`, `render:cm_fs_passthrough`, `decoration:shadow:ignore_window`)
+
+### Removed
+
+- `Document.serialize()` method removed (API breaking change); use module-level `serialize_hyprlang(doc)` instead
+
+### Fixed
+
+- Sectioned key moves in migrations now reinsert keys into the correct target section instead of only rewriting `full_key`
+- IPC-style bare-hex gradients (`AARRGGBB ... Ndeg`) can now be normalized to config-safe `0x` tokens
+
+## [0.4.5] - 2026-05-01
+
+### Fixed
+
+- `bindm` lines rejected by Hyprland with `bind: too many args` - `BindData.to_line()` no longer appends a trailing comma when `arg` is empty; `bindm` is strict about argument count where other bind variants tolerate either form. https://github.com/BlueManCZ/hyprmod/issues/20
+- `parse_bind_line` rejects non-bind lines - keywords other than `bind` / `binde` / `bindm` / ... now return `None` instead of a bogus `BindData`
+- Empty `XDG_CONFIG_HOME` is now treated the same as unset; previously it resolved against the current working directory
+
+### Changed
+
+- Booleans now serialize as `true` / `false` (canonical Hyprlang form), replacing IPC-style `0` / `1`
+- `Document.iter_lines()`, `target_documents()`, and `mark_dirty()` are now public APIs
+- `value_to_conf` is now a thin `str()` pass-through; gradient hex auto-`0x`-prefixing moved to `Gradient.parse()`
+
+## [0.4.4] - 2026-04-29
+
+### Added
+
+- `windowrulev2` -> `windowrule` v3 migration for Hyprland 0.52 -> 0.53: keyword rename, `key:value` matchers rewritten to `match:KEY VALUE`, boolean effects now include required `on`, snake_case effect/matcher renames (`noblur` -> `no_blur`, `initialClass` -> `initial_class`, ...), and `~key:value` negation rewritten to `match:key negative:value`
+
+### Fixed
+
+- v3 `windowrule` lines are no longer downgraded to v2; v3 lines are now detected by the presence of a `match:` token and skipped by v1 -> v2 migration
+- Recovery for configs corrupted by `hyprland-config<0.4.4`: malformed lines shaped as `windowrulev2 = match:..., title:<v3 effect> ...` are now recognized and cleaned up to valid v3 form
+
+## [0.4.3] - 2026-04-20
+
+### Fixed
+
+- Flat-syntax preservation in migrations: renaming a deprecated option on a flat colon-prefixed line (for example `decoration:blur_size = 8`) no longer drops the section prefix and rewrites it as `size = 8`
+
+### Changed
+
+- Expression evaluator rewritten on top of `ast`; behavior preserved while replacing the handwritten tokenizer/parser in `_expr.py`
+- Unified key matching in `_model.py`: `_match_key()` now takes a comparator, so glob and equality paths share one implementation
+
+### Chore
+
+- Dev dependencies refreshed: `hypothesis` 6.151.9 -> 6.152.1, `pytest` 9.0.2 -> 9.0.3, `ruff` 0.15.7 -> 0.15.11
+
+## [0.4.2] - 2026-04-05
+
+### Fixed
+
+- Hyphenated variable names are now parsed correctly (for example `$terminal-float = kitty`). https://github.com/BlueManCZ/hyprmod/issues/9
+
+## [0.4.1] - 2026-04-02
+
+### Fixed
+
+- Colon-namespaced section parsing: section names containing colons (for example `plugin:dynamic-cursors { }`) are now parsed correctly; previously parser failed to recognize them as valid section blocks. https://github.com/BlueManCZ/hyprmod/issues/8
+
+## [0.4.0] - 2026-03-31
+
+### Removed
+
+- `ParseError.source` renamed to `ParseError.source_name` (API breaking change)
+- `BindData.owned` field removed; it was always `True` and unused
+- `Color.to_string()` removed; use `str(color)` or `color.to_rgba()`
+- `Gradient.to_string()` and `Vec2.to_string()` removed; use `str(gradient)` and `str(vec2)`
+
+### Fixed
+
+- Hyphenated section names now parse correctly, including plugin sections like `split-monitor-workspaces { }` and one-line blocks like `split-monitor-workspaces { count = 2 }`. https://github.com/BlueManCZ/hyprmod/issues/2
+
+### Changed
+
+- Simplified migration internals: `_DeprecationRule` and `_Migration` no longer use `frozen=True` with `object.__setattr__()` workarounds; computed fields now set via normal `__post_init__` assignment
+- Cleaner predicate naming in document model: internal `_kv_matches_key` wrapper removed, `_kv_predicate` renamed to `_key_predicate`
+- Stricter gradient detection in `value_to_conf()`: bare `"deg"` substring check replaced with a `\b\d+deg\b` regex to avoid false positives on non-gradient strings
+
+## [0.3.0] - 2026-03-26
+
+### Added
+
+- Keyword bare-key matching: `find("animation")` and `find_all("animation")` now match keywords inside sections (for example inside `animations { }`), matching Hyprland behavior; section-qualified lookups like `find("animations:animation")` still work. Assignments still require full section-qualified keys
+- Source exclusion in `find_all()` via new `exclude_sources` parameter accepting a frozenset of resolved paths whose source documents should be skipped
+
+### Changed
+
+- Tighter type annotations in `_values.py`: `Any` return types replaced with `bool | int | float | str` on `coerce_config_value()` and `value_to_conf()`, and `"choice"` type is now handled as `int`
+- Glob matching in `find_all()` now matches keywords by both bare key and full section-qualified key
+
+## [0.2.0] - 2026-03-24
+
+### Added
+
+- `parse_bind_line()` parses `bind = MODS, KEY, dispatcher, arg` lines into structured `BindData` with combo normalization, round-trip serialization, and display formatting
+- `coerce_config_value()` converts config strings to typed Python values (`bool`, `int`, `float`); `value_to_conf()` converts back and normalizes gradient hex tokens with `0x` prefixes
+- Public `is_bind_keyword()` API to detect bind-variant keywords (`bind`, `binde`, `bindm`, ...)
+
+### Changed
+
+- Source exclusion in queries: `get()` and `find()` accept `exclude_sources` to skip specific source files during resolution
+- `Color.parse()` now accepts bare `AARRGGBB` format (8-digit hex without `0x`) used by Hyprland IPC responses
+- `Color`, `Gradient`, and `Vec2` dataclasses now use `slots=True` for lower memory usage
+
+## [0.1.1] - 2026-03-24
+
+### Fixed
+
+- Packaging: sdist and wheel now include only package code; tests and other non-package files are excluded from published artifacts
+- Type safety: replaced `type: ignore` suppression in `Document.find()` with a proper `cast`, and cleaned up variable unpacking in `Document.set_variable()`
+- Migration: hoisted `_V2_PREFIXES` constant out of inner function in `_migrate_windowrule_v1_to_v2`
+
+## [0.1.0] - 2026-03-21
+
+Initial release - round-trip parser and editor for Hyprland configuration files.
+
+### Added
+
+- Round-trip editing that preserves comments, blank lines, and formatting
+- `source = ...` following across multiple files with glob and `~` expansion, symlink support, and cycle detection
+- Zero dependencies; pure Python (3.12+)
+- Atomic writes (temp file + fsync + rename)
+- Nested `category { }` blocks, `device[name] { }` keyed sections, inline syntax (`general:gaps_in = 5`), and one-line blocks
+- `$variable` definitions and expansion
+- Expression evaluation (`{{2 + 2}}`) with `\{{` escape support
+- Conditional directives (`# hyprlang if/elif/else/endif`) and `# hyprlang noerror`
+- Comments, inline comments, and `##` escape handling
+- Special keywords including bind variants, monitor, animation, bezier, env, exec, workspace, and windowrule
+- Lenient parsing mode where unparseable lines become error nodes instead of raising
+- Deprecation checking and automatic migration covering Hyprland v0.33-v0.53+
+- Dirty tracking so `save()` only writes files that changed
+- `ParseError` with file name and line number on malformed input
+
+[0.5.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.5.0
+[0.4.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.5
+[0.4.4]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.4
+[0.4.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.3
+[0.4.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.2
+[0.4.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.1
+[0.4.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.0
+[0.3.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.3.0
+[0.2.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.2.0
+[0.1.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.1.1
+[0.1.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.1.0

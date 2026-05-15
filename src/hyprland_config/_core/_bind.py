@@ -1,17 +1,21 @@
-"""Keybind data model and parsing."""
+"""Keybind data model — shared between Hyprlang and Lua bridges."""
 
-import re
 from dataclasses import dataclass, field
 
-# Hyprland generates bind variants combinatorially from flag chars
-# (e, l, r, n, m, t, i, s, d, p). A regex covers all current and future
-# combinations without needing manual enumeration.
-_BIND_RE = re.compile(r"^bind[elnrmtisdp]*$")
-
-
-def is_bind_keyword(name: str) -> bool:
-    """Return True if *name* is a bind-variant keyword (bind, binde, bindm …)."""
-    return _BIND_RE.match(name) is not None
+# Bind keyword suffix char → Lua flag-table field name. ``d`` is handled
+# separately (it adds a string ``description`` field and shifts the
+# positional layout, rather than just toggling a bool), and ``s`` / ``p``
+# have no documented Lua equivalent yet. The forward and reverse Lua
+# bridges both consume this single source of truth.
+BIND_FLAG_MAP: dict[str, str] = {
+    "e": "repeating",
+    "l": "locked",
+    "m": "mouse",
+    "r": "release",
+    "n": "non_consuming",
+    "t": "transparent",
+    "i": "ignore_mods",
+}
 
 
 @dataclass(slots=True)
@@ -61,33 +65,3 @@ class BindData:
         if self.arg:
             return f"{self.dispatcher}: {self.arg}"
         return self.dispatcher
-
-
-def parse_bind_line(line: str) -> BindData | None:
-    """Parse a ``'bind = MODS, KEY, dispatcher, arg'`` line.
-
-    Returns ``None`` if the line's keyword is not a bind variant
-    (``bind``, ``binde``, ``bindm``, …) or if it has fewer than the
-    three required comma-separated parts after ``=``.
-    """
-    if "=" not in line:
-        return None
-    btype, _, rest = line.partition("=")
-    btype = btype.strip()
-    if not is_bind_keyword(btype):
-        return None
-    parts = [p.strip() for p in rest.split(",", 3)]
-    if len(parts) < 3:
-        return None
-    mods_str = parts[0]
-    key = parts[1]
-    dispatcher = parts[2]
-    arg = parts[3] if len(parts) > 3 else ""
-    mods = mods_str.split() if mods_str else []
-    return BindData(
-        bind_type=btype,
-        mods=mods,
-        key=key,
-        dispatcher=dispatcher,
-        arg=arg,
-    )

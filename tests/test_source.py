@@ -6,6 +6,7 @@ from hyprland_config import (
     Source,
     load,
     parse_to_dict,
+    serialize_hyprlang,
 )
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ class TestDocumentSourceFollowing:
         source_node = doc.lines[0]
         assert isinstance(source_node, Source)
         sub_doc = source_node.documents[0]
-        assert sub_doc.serialize() == "key = value\n"
+        assert serialize_hyprlang(sub_doc) == "key = value\n"
 
     def test_variables_merge_from_sources(self, tmp_path):
         sub = tmp_path / "sub.conf"

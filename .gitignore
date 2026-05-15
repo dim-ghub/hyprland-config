@@ -7,3 +7,4 @@ dist/
 .pytest_cache/
 .hypothesis/
 .python-version
+local/

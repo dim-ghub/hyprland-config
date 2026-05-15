@@ -20,7 +20,7 @@ That's it. `load()` reads `~/.config/hypr/hyprland.conf`, follows all `source` d
 pip install hyprland-config
 ```
 
-Requires Python 3.12+. Zero runtime dependencies.
+Requires Python 3.12+. Zero Python runtime dependencies. Reading Lua-format configs (`load_lua()`) additionally requires a `lua` interpreter (5.3+) on `PATH` — already present on any host running Hyprland 0.55+.
 
 ## Why this library
 
@@ -28,7 +28,7 @@ This is a round-trip parser. It keeps comments, blank lines, variable definition
 
 It follows `source` directives across multiple files, resolves globs (including absolute paths for NixOS/home-manager setups), detects cycles, and only writes back files that actually changed. Writes are atomic (temp file + fsync + rename) so a crash mid-save won't corrupt your config.
 
-300+ tests, including property-based and fuzz testing with Hypothesis.
+600+ tests, including property-based and fuzz testing with Hypothesis.
 
 ## Usage
 
@@ -111,6 +111,8 @@ for line in config.lines:
             print(f"{sub_doc.path.name}: {len(sub_doc.lines)} lines")
 ```
 
+Variables (`$foo`) expand only when defined with `$foo = ...` in the config. Environment variables like `$HOME` or `$XDG_CONFIG_HOME` are **not** expanded — this matches Hyprland's own behavior. The `env = ...` keyword sets environment variables for child processes; it does not define config variables.
+
 ### Parse from a string
 
 ```python
@@ -144,7 +146,7 @@ for err in config.errors:
 Hyprland 0.55.0 introduced Lua as the default config language. `serialize_lua()` walks a parsed document and emits the equivalent Lua, suitable for tools that want to write a `.lua` managed config alongside (or in place of) a Hyprlang one.
 
 ```python
-from hyprland_config import parse_string
+from hyprland_config import parse_string, serialize_lua
 
 doc = parse_string("""
 general {
@@ -156,7 +158,7 @@ env = XCURSOR_SIZE, 24
 bezier = easeOut, 0.05, 0.9, 0.1, 1.0
 animation = windows, 1, 7, easeOut, slide
 """)
-print(doc.serialize_lua())
+print(serialize_lua(doc))
 ```
 
 ```lua
@@ -187,7 +189,97 @@ hl.animation({
 })
 ```
 
-Phase 1 covers category-keyed assignments and the `env`, `monitor`, `bezier`, `animation` keywords. Other keywords (`bind` family, `windowrule`, `layerrule`, `workspace`, `gesture`, `device`, `exec`, `permission`) land in a `-- TODO` block at the end of the output for now — these will get dedicated `hl.bind(...)`, `hl.window_rule(...)`, etc. emitters in a follow-up. The emitter is one-way: comments, blank lines, and variables aren't preserved.
+Currently covered:
+
+- Category-keyed assignments → merged into one `hl.config({...})` call. Both colon (`decoration:blur:size`) and dot (`general:col.inactive_border`) act as nesting separators.
+- `env` → `hl.env`, `monitor` → `hl.monitor`, `bezier` → `hl.curve`, `animation` → `hl.animation`.
+- `bind` family (`bind`, `binde`, `bindm`, `bindl`, `bindr`, `bindel`, `bindd`, `binded`, `bindmd`, …) → `hl.bind(KEY, hl.dsp.*, FLAGS)`. Suffix chars map to flag fields (`e`→`repeating`, `l`→`locked`, `m`→`mouse`, `r`→`release`, `n`→`non_consuming`, `t`→`transparent`, `i`→`ignore_mods`), plus `d` adds an extra description string (`bindd = MODS, KEY, DESCRIPTION, DISPATCHER, ARG`). Common dispatchers (`exec`, `killactive`, `togglefloating`, `movefocus`, `workspace`, `movetoworkspace`, `togglespecialworkspace`, `changegroupactive`, `moveintogroup`, `moveoutofgroup`, `resizeactive`, `setprop`, `swapwindow`, `tagwindow`, `layoutmsg`, …) map to their `hl.dsp.*` counterparts.
+- `windowrule` / `windowrulev2` → `hl.window_rule({ match = { … }, ACTION = VALUE })`. Both line-style (`windowrule = float on, match:class …`) **and** block-style (`windowrule { match:class = …; float = on; }`) are supported, in either matcher-first or effect-first ordering.
+- `layerrule` → `hl.layer_rule(...)`, also accepting block syntax.
+- `workspace = ID, monitor:DP-1, default:true, …` → `hl.workspace_rule({...})`.
+- `gesture` → `hl.gesture({...})`.
+- `permission = REGEX, TYPE, ACTION` → `hl.permission("REGEX", "TYPE", "ACTION")`.
+- `device { name = …; sensitivity = …; }` block → `hl.device({...})`.
+- `exec` / `exec-once` → batched into one `hl.on("hyprland.start", function() … end)` block, with `exec-once` lines flagged for manual review. `exec-shutdown` → matching `hyprland.shutdown` block.
+
+Anything we can't translate confidently — an unmapped dispatcher, an unsupported bind flag suffix, `unbind`, `submap`, `plugin` — lands in a `-- TODO: manual conversion` block at the bottom of the output. The emitter is one-way: comments, blank lines, and variables aren't preserved.
+
+`serialize_lua()` flattens everything into one Lua document, inlining each `source = …` directive at its position. If your Hyprlang config is split across multiple files and you want the same shape on the Lua side, use `serialize_lua_tree()`:
+
+```python
+from hyprland_config import load, serialize_lua_tree
+
+doc = load()  # ~/.config/hypr/hyprland.conf
+tree = serialize_lua_tree(doc)
+
+# tree is a list of LuaFile(path, source_path, content, unmapped):
+#   LuaFile(path=Path("~/.../hyprland.lua"),       content="...", unmapped=[]),
+#   LuaFile(path=Path("~/.../hyprland.lua.d/00_env.lua"), content="...", unmapped=[]),
+#   ...
+# Each parent file's content has `dofile("…/foo.lua")` calls in place
+# of the original `source = …/foo.conf` lines.
+
+for entry in tree:
+    entry.path.write_text(entry.content)
+```
+
+Each sub-document gets its own `.lua` file (`.conf` swapped for `.lua`) and the parent stitches them together with `dofile()` at the right positions, matching how Hyprland evaluates the original tree at runtime. Caveat: each emitted file's `hl.config({...})` block is the merged last-wins result of *that file's* assignments — if you depend on a parent assignment that comes *after* a `source` directive overriding the same key in the child, use `serialize_lua()` instead so the merge spans the whole tree.
+
+### Read a Lua config
+
+`load_lua()` is the inverse direction — it parses an existing `hyprland.lua` (and any files it pulls in via `dofile`) into the same `Document` tree the Hyprlang parser produces, so the rest of the API works identically regardless of on-disk format:
+
+```python
+from hyprland_config import load_lua
+
+config = load_lua("~/.config/hypr/hyprland.lua")
+
+config.get("general:gaps_in")        # "5"
+config.get_all("bind")               # ["SUPER, Q, killactive,", ...]
+config.set("decoration:rounding", 8) # works the same as on Hyprlang configs
+```
+
+Under the hood `load_lua()` shells out to a `lua` interpreter to run the user's config under a sandboxed `hl.*` shim and captures the effects. Comments, blank lines, and the user's own local variables are not preserved — only the `hl.*` calls the config produces. If `lua` is missing from `PATH`, `LuaReaderError` (a subclass of `ParseError`) is raised with a clear message.
+
+### Format-agnostic load and serialize
+
+When a caller doesn't know in advance whether the user is on Hyprlang or Lua, the `*_any` helpers dispatch on the file suffix:
+
+```python
+from hyprland_config import default_entrypoint, load_any, serialize_any
+
+path = default_entrypoint()  # hyprland.lua if it exists, else hyprland.conf
+doc = load_any(path)
+# ...edit doc...
+path.write_text(serialize_any(doc, path))
+```
+
+`default_entrypoint()` mirrors Hyprland's own resolution: it returns `hyprland.lua` when present (Hyprland 0.55+), falling back to `hyprland.conf`. The companion `default_config_dir()`, `default_hyprlang_entrypoint()`, and `default_lua_entrypoint()` return their parts individually.
+
+### Convert a Hyprlang config to Lua
+
+For a one-shot migration off Hyprlang onto Hyprland 0.55+'s default Lua format, `analyze_conversion()` and `execute_conversion()` form a safe two-phase API. `analyze_conversion()` parses the input, plans every output file, and surfaces anything the emitter can't translate — without writing anything to disk:
+
+```python
+from pathlib import Path
+from hyprland_config import analyze_conversion, execute_conversion
+
+plan = analyze_conversion(Path.home() / ".config/hypr/hyprland.conf")
+
+# Inspect before committing
+print(f"Would write {len(plan.output_files)} files ({plan.sourced_count} sourced)")
+for unmapped in plan.unmapped:
+    print(f"  TODO ({unmapped.source.name}): {unmapped.line}")
+if plan.has_conflicts:
+    print(f"Existing .lua files would be skipped: {plan.existing_lua}")
+
+# Commit (refuses to overwrite existing .lua files unless overwrite=True)
+result = execute_conversion(plan)
+if not result.ok:
+    print(f"Conversion failed: {result.errors}")
+```
+
+`execute_conversion()` writes every file to a staging path first, then renames them onto their final paths only if the entire batch succeeded. The original `.conf` files are never modified. A partial failure cleans up the staged files and reports which paths were written before the abort, so callers can recover without surprises.
 
 ### Check for deprecations
 
@@ -198,7 +290,7 @@ from hyprland_config import load, check_deprecated, migrate
 
 config = load()
 
-# Check for deprecated options (covers v0.33–v0.53+)
+# Check for deprecated options (covers v0.33–v0.55+)
 warnings = check_deprecated(config)
 for w in warnings:
     print(f"{w.key}: {w.message} (deprecated in v{w.version_deprecated})")
@@ -221,8 +313,10 @@ config.save()
 - Comments, inline comments, `##` escape, blank lines
 - Special keywords: bind (all flag variants), monitor, animation, bezier, env, exec, workspace, windowrule, and more
 - Comment-preserving round-trip editing
+- Lua format support (Hyprland 0.55+): read existing `hyprland.lua` configs back into `Document` via `load_lua()`, emit Lua via `serialize_lua()` / `serialize_lua_tree()`, and migrate Hyprlang trees onto Lua atomically via `analyze_conversion()` / `execute_conversion()`
+- Format-agnostic `load_any()` / `serialize_any()` helpers that dispatch on file suffix
 - Lenient parsing mode for malformed or partial configs
-- Deprecation checking and automatic migration (v0.33–v0.53+)
+- Deprecation checking and automatic migration (v0.33–v0.55+)
 - Section listing and iteration
 - Dirty tracking — only modified files are written to disk
 - Atomic writes (temp file + fsync + rename)

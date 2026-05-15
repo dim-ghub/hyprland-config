@@ -9,7 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from hyprland_config._model import Comment, Document, KeyValueLine, Line
+from hyprland_config._core._model import Comment, Document, KeyValueLine, Line
+from hyprland_config._core._types import parse_version
 
 
 @dataclass(frozen=True)
@@ -52,14 +53,9 @@ class _DeprecationRule:
     _value_re: re.Pattern[str] | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._deprecated_ver = _version_tuple(self.version_deprecated)
+        self._deprecated_ver = parse_version(self.version_deprecated)
         self._line_re = re.compile(self.line_pattern) if self.line_pattern else None
         self._value_re = re.compile(self.value_pattern) if self.value_pattern else None
-
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    """Parse a version string like '0.48' into a comparable tuple."""
-    return tuple(int(x) for x in version.split("."))
 
 
 # Blur options that moved from decoration:blur_* to decoration:blur:*
@@ -171,6 +167,37 @@ _RULES: list[_DeprecationRule] = [
             "Use fadeIn, fadeOut, fadeSwitch, fadeShadow, fadeDim, fadeLayersIn, fadeLayersOut"
         ),
     ),
+    # v0.55: pseudotile removed (was a no-op)
+    _DeprecationRule(
+        key="dwindle:pseudotile",
+        message="pseudotile was removed (it wasn't doing anything)",
+        version_deprecated="0.55",
+        version_removed="0.55",
+        suggestion="Remove this option",
+    ),
+    # v0.55: vfr moved from misc to debug
+    _DeprecationRule(
+        key="misc:vfr",
+        message="vfr was moved to the debug section",
+        version_deprecated="0.55",
+        suggestion="Use debug:vfr instead",
+    ),
+    # v0.55: cm_fs_passthrough removed (now automatic with cm_auto_hdr)
+    _DeprecationRule(
+        key="render:cm_fs_passthrough",
+        message="cm_fs_passthrough was removed",
+        version_deprecated="0.55",
+        version_removed="0.55",
+        suggestion="Remove this option — it is now automatic with render:cm_auto_hdr",
+    ),
+    # v0.55: shadow:ignore_window removed (always enabled now)
+    _DeprecationRule(
+        key="decoration:shadow:ignore_window",
+        message="shadow:ignore_window was removed (always enabled now)",
+        version_deprecated="0.55",
+        version_removed="0.55",
+        suggestion="Remove this option",
+    ),
 ]
 
 
@@ -197,7 +224,7 @@ def check_deprecated(
         document's ``sources_followed`` flag.
     """
     warnings: list[ConfigDeprecation] = []
-    min_ver = _version_tuple(min_version) if min_version is not None else None
+    min_ver = parse_version(min_version) if min_version is not None else None
 
     for _owner_doc, line in doc.iter_lines(recursive):
         for rule in _RULES:
@@ -270,7 +297,7 @@ class _Migration:
     _from_ver: tuple[int, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._from_ver = _version_tuple(self.from_version)
+        self._from_ver = parse_version(self.from_version)
 
 
 def _transform_lines(
@@ -635,6 +662,66 @@ def _make_rename_migration(
     return lambda doc: _transform_lines(doc, lambda ln: ln.full_key == old_full_key, transform)
 
 
+def _make_delete_migration(full_key: str) -> Callable[[Document], bool]:
+    """Build a migration that removes all lines matching ``full_key``.
+
+    Used for options that were removed with no replacement (e.g.
+    ``dwindle:pseudotile`` and ``render:cm_fs_passthrough`` in v0.55).
+    Matches both flat colon syntax and sectioned forms, since both
+    resolve to the same ``full_key``.
+    """
+
+    def migration(doc: Document) -> bool:
+        before = len(doc.lines)
+        doc.remove_matching_lines(
+            lambda ln: isinstance(ln, KeyValueLine) and ln.full_key == full_key
+        )
+        return len(doc.lines) != before
+
+    return migration
+
+
+def _make_move_migration(old_full_key: str, new_full_key: str) -> Callable[[Document], bool]:
+    """Build a migration that moves a key to a different section path.
+
+    Handles both forms the parser produces:
+
+    - **Flat colon syntax** (``misc:vfr = false``): renamed in place via
+      :func:`_rewrite_line_key`, same as a regular rename.
+    - **Sectioned syntax** (inside ``misc { vfr = false }``): the line is
+      physically removed from its current section and re-inserted into
+      the target section using :meth:`Document.insert_assignment`,
+      which creates the target section if it doesn't already exist.
+      Inline comments on the original line are forwarded to the new line.
+
+    A plain rename via :func:`_rewrite_line_key` is wrong for the sectioned
+    case because it only rewrites ``full_key`` and the leaf — the line
+    stays inside the original section block, and Hyprland re-parses it
+    under the original section prefix.
+    """
+
+    def migration(doc: Document) -> bool:
+        targets = [
+            ln for ln in doc.lines if isinstance(ln, KeyValueLine) and ln.full_key == old_full_key
+        ]
+        if not targets:
+            return False
+
+        for line in targets:
+            if line.key == line.full_key:
+                _rewrite_line_key(line, new_full_key)
+            else:
+                value = line.value
+                inline_comment = line.inline_comment
+                doc.lines = [ln for ln in doc.lines if ln is not line]
+                doc.insert_assignment(new_full_key, value, inline_comment=inline_comment)
+
+        doc.mark_dirty()
+        return True
+
+    return migration
+
+
 # Sorted by from_version so migrate() can iterate directly.
 _MIGRATIONS: list[_Migration] = sorted(
     [
@@ -680,6 +767,30 @@ _MIGRATIONS: list[_Migration] = sorted(
             "0.53",
             _migrate_windowrule_v2_to_v3,
         ),
+        _Migration(
+            "Remove dwindle:pseudotile (no-op since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("dwindle:pseudotile"),
+        ),
+        _Migration(
+            "Move misc:vfr → debug:vfr",
+            "0.54",
+            "0.55",
+            _make_move_migration("misc:vfr", "debug:vfr"),
+        ),
+        _Migration(
+            "Remove render:cm_fs_passthrough (automatic since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("render:cm_fs_passthrough"),
+        ),
+        _Migration(
+            "Remove decoration:shadow:ignore_window (always enabled since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("decoration:shadow:ignore_window"),
+        ),
     ],
     key=lambda m: m._from_ver,
 )
@@ -718,8 +829,8 @@ def migrate(
         Lists of applied and skipped migration descriptions.
     """
     result = MigrationResult()
-    from_ver = _version_tuple(from_version) if from_version is not None else None
-    to_ver = _version_tuple(to_version) if to_version is not None else None
+    from_ver = parse_version(from_version) if from_version is not None else None
+    to_ver = parse_version(to_version) if to_version is not None else None
 
     for m in _MIGRATIONS:
         if from_ver is not None and m._from_ver < from_ver:

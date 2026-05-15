@@ -161,3 +161,49 @@ class Vec2:
     def __str__(self) -> str:
         """Format as ``x y``."""
         return f"{self.x} {self.y}"
+
+
+def parse_version(version: str | None) -> tuple[int, ...]:
+    """Parse a Hyprland version string into a comparable tuple.
+
+    Accepts ``"0.48"``, ``"0.55.0"``, and the ``v``-prefixed forms found
+    in git tags. Returns an empty tuple for ``None``, the empty string,
+    or anything that doesn't parse cleanly — callers can treat an empty
+    tuple as "unknown" and compare conservatively.
+    """
+    if not version:
+        return ()
+    try:
+        return tuple(int(p) for p in version.lstrip("v").split("."))
+    except ValueError:
+        return ()
+
+
+def normalize_gradient_string(value: str) -> str:
+    """Repack a gradient string from IPC form to config-file form.
+
+    Hyprland's IPC reports gradients as bare hex tokens followed by an
+    angle (``"eeb4e718 ee00ff99 45deg"``), but the config-file parser
+    requires ``0x``-prefixed colors or ``rgba(...)`` wrapping. This
+    adds the ``0x`` prefix to any bare ``AARRGGBB`` token, leaving
+    already-wrapped colors and the trailing ``Ndeg`` untouched.
+
+    Strings that don't look like gradients (no trailing ``deg``) pass
+    through unchanged — callers should gate on schema option type.
+    """
+    tokens = value.split()
+    if not tokens or not tokens[-1].endswith("deg"):
+        return value
+    out: list[str] = []
+    for token in tokens:
+        if token.endswith("deg") or token.startswith("0x") or "(" in token:
+            out.append(token)
+        elif _HEX_ARGB_RE.match(token):
+            # ``_HEX_ARGB_RE`` accepts both ``0xAARRGGBB`` and bare
+            # ``AARRGGBB``; the prefix check above filters out the
+            # ``0x``-prefixed form, so this branch only ever matches
+            # bare 8-hex tokens.
+            out.append(f"0x{token}")
+        else:
+            out.append(token)
+    return " ".join(out)

@@ -1,6 +1,13 @@
 """Tests for deprecation checking and migration helpers."""
 
-from hyprland_config import KeyValueLine, check_deprecated, migrate, parse_file, parse_string
+from hyprland_config import (
+    KeyValueLine,
+    check_deprecated,
+    migrate,
+    parse_file,
+    parse_string,
+    serialize_hyprlang,
+)
 
 
 class TestCheckDeprecated:
@@ -66,6 +73,27 @@ class TestCheckDeprecated:
         warnings = check_deprecated(doc)
         assert any("no_vfr" in w.key for w in warnings)
 
+    def test_detects_pseudotile(self):
+        doc = parse_string("dwindle {\n    pseudotile = 1\n}\n")
+        warnings = check_deprecated(doc)
+        assert any(w.key == "dwindle:pseudotile" for w in warnings)
+
+    def test_detects_vfr_in_misc(self):
+        doc = parse_string("misc {\n    vfr = false\n}\n")
+        warnings = check_deprecated(doc)
+        moved = [w for w in warnings if w.key == "misc:vfr"]
+        assert moved and "debug:vfr" in moved[0].suggestion
+
+    def test_detects_cm_fs_passthrough(self):
+        doc = parse_string("render {\n    cm_fs_passthrough = 2\n}\n")
+        warnings = check_deprecated(doc)
+        assert any(w.key == "render:cm_fs_passthrough" for w in warnings)
+
+    def test_detects_shadow_ignore_window(self):
+        doc = parse_string("decoration {\n    shadow {\n        ignore_window = true\n    }\n}\n")
+        warnings = check_deprecated(doc)
+        assert any(w.key == "decoration:shadow:ignore_window" for w in warnings)
+
     def test_recursive_checks_sourced_docs(self, tmp_path):
         """check_deprecated follows sources when recursive."""
         sub = tmp_path / "sub.conf"
@@ -85,7 +113,7 @@ class TestMigrate:
         assert result.changes_made
         assert any("exec_once" in d for d in result.applied)
         assert isinstance(doc.lines[0], KeyValueLine) and doc.lines[0].key == "exec-once"
-        assert "exec-once" in doc.serialize()
+        assert "exec-once" in serialize_hyprlang(doc)
 
     def test_migrate_blur_options(self):
         doc = parse_string("decoration {\n    blur_size = 3\n    blur_passes = 1\n}\n")
@@ -104,7 +132,7 @@ class TestMigrate:
         kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
         assert kv[0].full_key == "cursor:no_warps"
         assert kv[0].key == "no_warps"
-        assert "no_warps = true" in doc.serialize()
+        assert "no_warps = true" in serialize_hyprlang(doc)
 
     def test_migrate_numlock(self):
         doc = parse_string("input {\n    numlock_by_default = true\n}\n")
@@ -119,7 +147,7 @@ class TestMigrate:
         doc = parse_string("windowrule = float,Firefox\n")
         result = migrate(doc)
         assert result.changes_made
-        serialized = doc.serialize()
+        serialized = serialize_hyprlang(doc)
         # Final form is v3, not v2 — the chain runs both rewrites.
         assert "windowrulev2" not in serialized
         assert "windowrule = match:title Firefox, float on" in serialized
@@ -129,7 +157,7 @@ class TestMigrate:
         # that want intermediate state.
         doc = parse_string("windowrule = float,Firefox\n")
         migrate(doc, to_version="0.52")
-        serialized = doc.serialize()
+        serialized = serialize_hyprlang(doc)
         assert "windowrulev2" in serialized
         assert "title:Firefox" in serialized
 
@@ -143,7 +171,7 @@ class TestMigrate:
         # meant.
         doc = parse_string("windowrule = float,title:Firefox\n")
         migrate(doc)
-        serialized = doc.serialize()
+        serialized = serialize_hyprlang(doc)
         assert "title:title:" not in serialized
         # Stays unchanged — neither migration claims it.
         assert "windowrule = float,title:Firefox" in serialized
@@ -167,7 +195,7 @@ class TestMigrate:
         # v3 with matchers first, effect last
         doc = parse_string("windowrule = match:class ^(firefox)$, float on\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "windowrulev2" not in out
         assert "title:float on" not in out
         assert out.strip() == "windowrule = match:class ^(firefox)$, float on"
@@ -177,7 +205,7 @@ class TestMigrate:
         # Both orderings of v3 are valid; both must skip migration.
         doc = parse_string("windowrule = float on, match:class ^(firefox)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "windowrulev2" not in out
         # The leading "float on" was the second-comma-part candidate
         # for being wrapped with ``title:`` under the old buggy
@@ -188,7 +216,7 @@ class TestMigrate:
         doc = parse_string("windowrulev2 = float, class:^(firefox)$\n")
         result = migrate(doc)
         assert result.changes_made
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         # Keyword renamed, matcher carries ``match:`` prefix and a
         # space, bool effect gained ``on`` argument.
         assert "windowrule = match:class ^(firefox)$, float on" in out
@@ -197,28 +225,28 @@ class TestMigrate:
         # ``noblur`` → ``no_blur`` (v3 snake_case), gains ``on``.
         doc = parse_string("windowrulev2 = noblur, class:^(kitty)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "windowrule = match:class ^(kitty)$, no_blur on" in out
 
     def test_migrate_windowrulev2_to_v3_renamed_matcher(self):
         # ``initialClass`` → ``initial_class``.
         doc = parse_string("windowrulev2 = float, initialClass:^(firefox)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "match:initial_class ^(firefox)$" in out
 
     def test_migrate_windowrulev2_to_v3_negation(self):
         # v2's ``~class:foo`` becomes ``match:class negative:foo``.
         doc = parse_string("windowrulev2 = float, ~class:^(firefox)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "match:class negative:^(firefox)$" in out
 
     def test_migrate_windowrulev2_to_v3_multiarg_effect(self):
         # ``opacity 0.5 0.8`` keeps its args after the rename.
         doc = parse_string("windowrulev2 = opacity 0.5 0.8, class:^(kitty)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "windowrule = match:class ^(kitty)$, opacity 0.5 0.8" in out
 
     def test_migrate_windowrulev2_to_v3_multi_matcher(self):
@@ -226,7 +254,7 @@ class TestMigrate:
         # ``match:`` tokens. Both matchers must carry over.
         doc = parse_string("windowrulev2 = float, class:^(kitty)$ title:^(scratch)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "match:class ^(kitty)$" in out
         assert "match:title ^(scratch)$" in out
         assert "float on" in out
@@ -238,7 +266,7 @@ class TestMigrate:
         # v3-only ``match:`` marker and strips the bogus ``title:``.
         doc = parse_string(r"windowrulev2 = match:class ^(ghostty)$, title:opacity 0.8" + "\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "title:opacity" not in out
         assert "windowrule = match:class ^(ghostty)$, opacity 0.8" in out
 
@@ -248,7 +276,7 @@ class TestMigrate:
         # original ``on`` is already present in the captured args.
         doc = parse_string(r"windowrulev2 = match:class ^(firefox)$, title:float on" + "\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         assert "title:float" not in out
         assert "windowrule = match:class ^(firefox)$, float on" in out
 
@@ -259,7 +287,7 @@ class TestMigrate:
         # is present.
         doc = parse_string("windowrulev2 = float, title:^(scratch)$\n")
         migrate(doc)
-        out = doc.serialize()
+        out = serialize_hyprlang(doc)
         # Translated as v2 → v3: the ``title:`` is a v2 matcher, not
         # a corruption marker.
         assert "windowrule = match:title ^(scratch)$, float on" in out
@@ -297,13 +325,13 @@ class TestMigratePreservesLineShape:
     def test_flat_blur_option_stays_flat(self):
         doc = parse_string("decoration:blur_size = 8\n")
         migrate(doc)
-        assert doc.serialize() == "decoration:blur:size = 8\n"
+        assert serialize_hyprlang(doc) == "decoration:blur:size = 8\n"
 
     def test_sectioned_blur_option_stays_sectioned(self):
         doc = parse_string("decoration {\n    blur_size = 8\n}\n")
         migrate(doc)
         # The leaf-only rewrite is correct inside a section block.
-        assert "    size = 8\n" in doc.serialize()
+        assert "    size = 8\n" in serialize_hyprlang(doc)
         # And the full_key still reflects the new nested path.
         kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
         assert kv[0].full_key == "decoration:blur:size"
@@ -312,7 +340,7 @@ class TestMigratePreservesLineShape:
     def test_flat_no_cursor_warps_stays_flat(self):
         doc = parse_string("cursor:no_cursor_warps = true\n")
         migrate(doc)
-        assert doc.serialize() == "cursor:no_warps = true\n"
+        assert serialize_hyprlang(doc) == "cursor:no_warps = true\n"
         kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
         assert kv[0].key == "cursor:no_warps"
         assert kv[0].full_key == "cursor:no_warps"
@@ -320,9 +348,134 @@ class TestMigratePreservesLineShape:
     def test_flat_numlock_stays_flat(self):
         doc = parse_string("input:numlock_by_default = true\n")
         migrate(doc)
-        assert doc.serialize() == "input:kb_numlock = true\n"
+        assert serialize_hyprlang(doc) == "input:kb_numlock = true\n"
 
     def test_flat_sensitivity_stays_flat(self):
         doc = parse_string("general:sensitivity = 1.0\n")
         migrate(doc)
-        assert doc.serialize() == "input:sensitivity = 1.0\n"
+        assert serialize_hyprlang(doc) == "input:sensitivity = 1.0\n"
+
+
+class TestMigrateV055:
+    """Migrations for Hyprland v0.55 breaking changes."""
+
+    def test_delete_pseudotile_sectioned(self):
+        doc = parse_string(
+            "dwindle {\n    pseudotile = 1 # master switch\n    preserve_split = 1\n}\n"
+        )
+        result = migrate(doc)
+        assert result.changes_made
+        out = serialize_hyprlang(doc)
+        assert "pseudotile" not in out
+        # Other options in the section survive.
+        assert "preserve_split = 1" in out
+
+    def test_delete_pseudotile_flat(self):
+        doc = parse_string("dwindle:pseudotile = 1\n")
+        migrate(doc)
+        assert serialize_hyprlang(doc) == ""
+
+    def test_delete_cm_fs_passthrough(self):
+        doc = parse_string(
+            "render {\n\tcm_auto_hdr = true\n\tcm_fs_passthrough = 2\n\tdirect_scanout = 1\n}\n"
+        )
+        result = migrate(doc)
+        assert result.changes_made
+        out = serialize_hyprlang(doc)
+        assert "cm_fs_passthrough" not in out
+        assert "cm_auto_hdr = true" in out
+        assert "direct_scanout = 1" in out
+
+    def test_delete_shadow_ignore_window_nested(self):
+        # Nested decoration:shadow section — leaf rewrite stays inside.
+        doc = parse_string(
+            "decoration {\n"
+            "    shadow {\n"
+            "        enabled = true\n"
+            "        ignore_window = true\n"
+            "    }\n"
+            "}\n"
+        )
+        migrate(doc)
+        out = serialize_hyprlang(doc)
+        assert "ignore_window" not in out
+        assert "enabled = true" in out
+
+    def test_delete_shadow_ignore_window_flat(self):
+        doc = parse_string("decoration:shadow:ignore_window = true\n")
+        migrate(doc)
+        assert serialize_hyprlang(doc) == ""
+
+    def test_move_vfr_flat(self):
+        doc = parse_string("misc:vfr = false\n")
+        migrate(doc)
+        assert serialize_hyprlang(doc) == "debug:vfr = false\n"
+
+    def test_move_vfr_sectioned_creates_debug_section(self):
+        # No pre-existing debug block — the migration creates one.
+        doc = parse_string("misc {\n    vrr = 1\n    vfr = false\n}\n")
+        result = migrate(doc)
+        assert result.changes_made
+        out = serialize_hyprlang(doc)
+        # vfr removed from misc
+        assert "    vfr = false\n" not in out.split("misc {")[1].split("}")[0]
+        # New debug section exists with vfr inside.
+        assert "debug {" in out
+        kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
+        vfr_lines = [ln for ln in kv if ln.full_key == "debug:vfr"]
+        assert len(vfr_lines) == 1
+        assert vfr_lines[0].value == "false"
+
+    def test_move_vfr_sectioned_uses_existing_debug_section(self):
+        # Pre-existing debug block — vfr lands inside it, not in a new block.
+        doc = parse_string("misc {\n    vfr = false\n}\n\ndebug {\n    overlay = true\n}\n")
+        migrate(doc)
+        out = serialize_hyprlang(doc)
+        # Only one debug { opening — no duplicate section.
+        assert out.count("debug {") == 1
+        kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
+        assert any(ln.full_key == "debug:vfr" and ln.value == "false" for ln in kv)
+        assert any(ln.full_key == "debug:overlay" for ln in kv)
+
+    def test_move_vfr_preserves_inline_comment(self):
+        # The round-trip-preserves-comments promise extends to migrations:
+        # an inline comment on a sectioned line must survive the move.
+        doc = parse_string("misc {\n    vfr = false # battery friendly\n}\n")
+        migrate(doc)
+        kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
+        vfr = next(ln for ln in kv if ln.full_key == "debug:vfr")
+        assert vfr.inline_comment == "# battery friendly"
+        assert "# battery friendly" in serialize_hyprlang(doc)
+
+    def test_migrate_real_v055_breaking_config(self):
+        # The exact shape that caused the v0.55 error report.
+        doc = parse_string(
+            "dwindle {\n"
+            "    pseudotile = 1\n"
+            "    preserve_split = 1\n"
+            "}\n"
+            "\n"
+            "misc {\n"
+            "    vrr = 1\n"
+            "    vfr = false\n"
+            "}\n"
+            "\n"
+            "debug {\n"
+            "}\n"
+            "\n"
+            "render {\n"
+            "    cm_auto_hdr = true\n"
+            "    cm_fs_passthrough = 2\n"
+            "    direct_scanout = 1\n"
+            "}\n"
+        )
+        migrate(doc)
+        # Re-check should now produce zero v0.55 warnings.
+        warnings = check_deprecated(doc, min_version="0.55")
+        assert warnings == []
+
+    def test_from_version_skips_055_for_older_target(self):
+        # User on Hyprland 0.54 should not get their pseudotile removed.
+        doc = parse_string("dwindle {\n    pseudotile = 1\n}\n")
+        migrate(doc, to_version="0.54")
+        assert "pseudotile = 1" in serialize_hyprlang(doc)

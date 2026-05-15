@@ -1,0 +1,532 @@
+"""Tests for the Lua reader (the inverse of ``serialize_lua``).
+
+These spawn the system ``lua`` interpreter to evaluate the test
+configs, so the suite is skipped on environments that don't ship one.
+On Hyprland 0.55+ machines (the target users for this reader) ``lua``
+is always present.
+"""
+
+import functools
+import shutil
+from pathlib import Path
+
+import pytest
+
+from hyprland_config import (
+    Assignment,
+    Keyword,
+    LuaReaderError,
+    load_lua,
+    parse_string,
+    serialize_lua,
+    serialize_lua_tree,
+)
+
+
+@functools.cache
+def _lua_available() -> bool:
+    return any(shutil.which(name) is not None for name in ("lua", "lua5.4", "lua5.3"))
+
+
+requires_lua = pytest.mark.skipif(not _lua_available(), reason="no lua interpreter on PATH")
+
+pytestmark = requires_lua
+
+
+def _write_lua(tmp_path: Path, code: str) -> Path:
+    path = tmp_path / "config.lua"
+    path.write_text(code)
+    return path
+
+
+def _assignments(doc) -> dict[str, str]:
+    # Walk the whole tree — Lua docs nest sub-files under :class:`Source`
+    # nodes (mirroring how the Hyprlang parser handles ``source = …``),
+    # so iterating ``doc.lines`` alone misses anything reached via dofile.
+    return {ln.full_key: ln.value for _doc, ln in doc.iter_lines() if isinstance(ln, Assignment)}
+
+
+def _keywords(doc, key: str) -> list[str]:
+    return [ln.value for _doc, ln in doc.iter_lines() if isinstance(ln, Keyword) and ln.key == key]
+
+
+class TestConfigOptions:
+    def test_top_level_option(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.config({ general = { gaps_in = 5 } })\n")
+        doc = load_lua(path)
+        assert _assignments(doc) == {"general:gaps_in": "5"}
+
+    def test_nested_subsection(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.config({ decoration = { blur = { enabled = true, size = 3 } } })\n",
+        )
+        doc = load_lua(path)
+        assert _assignments(doc) == {
+            "decoration:blur:enabled": "true",
+            "decoration:blur:size": "3",
+        }
+
+    def test_col_subnamespace_uses_dotted_leaf(self, tmp_path: Path) -> None:
+        # Hyprlang spells these keys ``general:col.X``, not ``general:col:X``.
+        # The emitter flattens them through a ``col`` Lua sub-table; the
+        # reader has to recognise the convention and reconstruct the dotted form.
+        path = _write_lua(
+            tmp_path,
+            "hl.config({ general = { col = { inactive_border = 'rgba(595959aa)' } } })\n",
+        )
+        doc = load_lua(path)
+        assert "general:col.inactive_border" in _assignments(doc)
+
+    def test_gradient_table_renders_as_hyprlang_string(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            """hl.config({
+                general = {
+                    col = {
+                        active_border = {
+                            colors = {'rgba(b4e718ee)', 'rgba(00ff99ee)'},
+                            angle = 45,
+                        },
+                    },
+                },
+            })""",
+        )
+        doc = load_lua(path)
+        assert (
+            _assignments(doc)["general:col.active_border"] == "rgba(b4e718ee) rgba(00ff99ee) 45deg"
+        )
+
+    def test_bool_values_serialise_as_true_false(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.config({ misc = { vrr = true, vfr = false } })\n",
+        )
+        doc = load_lua(path)
+        out = _assignments(doc)
+        assert out["misc:vrr"] == "true"
+        assert out["misc:vfr"] == "false"
+
+    def test_integer_floats_collapse(self, tmp_path: Path) -> None:
+        # 1.0 should come back as "1" not "1.0" — Hyprlang's parser
+        # accepts both for cssgap/int but our existing parsed form is int.
+        path = _write_lua(tmp_path, "hl.config({ decoration = { active_opacity = 1.0 } })\n")
+        assert _assignments(load_lua(path))["decoration:active_opacity"] == "1"
+
+
+class TestKeywordCalls:
+    def test_env(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.env('XCURSOR_SIZE', '24')\n")
+        assert _keywords(load_lua(path), "env") == ["XCURSOR_SIZE, 24"]
+
+    def test_monitor(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            """hl.monitor({
+                output = 'DP-1',
+                mode = '2560x1440@144',
+                position = '0x0',
+                scale = 1,
+                bitdepth = 10,
+            })""",
+        )
+        # Field order in the rendered CSV: output, mode, position, scale, then
+        # remaining keys sorted alphabetically.
+        assert _keywords(load_lua(path), "monitor") == ["DP-1, 2560x1440@144, 0x0, 1, bitdepth, 10"]
+
+    def test_monitor_disabled_round_trips_to_short_form(self, tmp_path: Path) -> None:
+        # ``disabled = true`` in Lua maps back to Hyprlang's
+        # ``monitor = OUTPUT, disable`` short-form so line-oriented consumers
+        # (hyprmod's monitor page) see the canonical legacy shape.
+        path = _write_lua(tmp_path, "hl.monitor({ output = 'DP-1', disabled = true })")
+        assert _keywords(load_lua(path), "monitor") == ["DP-1, disable"]
+
+    def test_bezier(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.curve('myCurve', { type = 'bezier', points = {{0.05,0.9},{0.1,1.05}} })",
+        )
+        assert _keywords(load_lua(path), "bezier") == ["myCurve, 0.05, 0.9, 0.1, 1.05"]
+
+    def test_animation(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.animation({ leaf='windows', enabled=true, speed=7,"
+            " bezier='easeOut', style='slide' })",
+        )
+        # Canonical Hyprlang booleans are ``true``/``false`` (project-wide
+        # convention since v0.4.5) — not the legacy ``1``/``0``.
+        assert _keywords(load_lua(path), "animation") == ["windows, true, 7, easeOut, slide"]
+
+    def test_workspace_rule(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.workspace_rule({ workspace = 1, monitor = 'DP-1', default = true })",
+        )
+        assert _keywords(load_lua(path), "workspace") == ["1, default:true, monitor:DP-1"]
+
+    def test_gesture(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.gesture({ fingers = 3, direction = 'horizontal', action = 'workspace' })",
+        )
+        assert _keywords(load_lua(path), "gesture") == ["3, horizontal, workspace"]
+
+    def test_permission(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.permission('/usr/bin/grim', 'screencopy', 'allow')")
+        assert _keywords(load_lua(path), "permission") == ["/usr/bin/grim, screencopy, allow"]
+
+    def test_unbind_reverts_to_comma_form(self, tmp_path: Path) -> None:
+        # hyprmod's OverrideTracker splits the unbind value on the first
+        # comma to pull ``(mods, key)`` apart. A raw passthrough of the
+        # ``"SUPER + Q"`` combo string from the Lua call would defeat that,
+        # so the reader has to undo the Lua-side join.
+        path = _write_lua(
+            tmp_path,
+            "hl.unbind('SUPER + Q')\nhl.unbind('F1')\nhl.unbind('SUPER + SHIFT + mouse:272')\n",
+        )
+        assert _keywords(load_lua(path), "unbind") == [
+            "SUPER, Q",
+            ", F1",
+            "SUPER SHIFT, mouse:272",
+        ]
+
+    def test_plugin_load_reverts_to_plugin_keyword(self, tmp_path: Path) -> None:
+        # ``hl.plugin`` is a namespace table on the real runtime, not a
+        # function — the wrapper has to mirror that shape so user calls
+        # land in our recorder instead of crashing on the catch-all
+        # ``__index`` (which returns a no-op function).
+        path = _write_lua(
+            tmp_path,
+            "hl.plugin.load('/usr/lib/hyprland/hyprexpo.so')\n"
+            "hl.plugin.load('/home/me/.local/share/plug.so')\n",
+        )
+        assert _keywords(load_lua(path), "plugin") == [
+            "/usr/lib/hyprland/hyprexpo.so",
+            "/home/me/.local/share/plug.so",
+        ]
+
+    def test_window_rule_with_match(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.window_rule({ match = { class = '^kitty$' }, float = true })",
+        )
+        # Hyprland 0.53+ rejects bare boolean effects — the canonical form
+        # is ``float on``, not just ``float``.
+        assert _keywords(load_lua(path), "windowrule") == ["float on, match:class ^kitty$"]
+
+    def test_layer_rule(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.layer_rule({ match = { namespace = '^waybar$' }, blur = true })",
+        )
+        assert _keywords(load_lua(path), "layerrule") == ["blur on, match:namespace ^waybar$"]
+
+
+class TestBindCalls:
+    def test_simple_bind(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.bind('SUPER + Q', hl.dsp.window.close())")
+        assert _keywords(load_lua(path), "bind") == ["SUPER, Q, killactive"]
+
+    def test_bind_with_exec(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.bind('SUPER + return', hl.dsp.exec_cmd('kitty'))")
+        assert _keywords(load_lua(path), "bind") == ["SUPER, return, exec, kitty"]
+
+    def test_bind_with_multiple_mods(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.bind('SUPER + SHIFT + Q', hl.dsp.window.close())")
+        # Hyprlang separates mods with spaces (not commas) — anything else
+        # round-trips into a different bind when re-parsed.
+        assert _keywords(load_lua(path), "bind") == ["SUPER SHIFT, Q, killactive"]
+
+    def test_bind_with_flags(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('XF86AudioMute', hl.dsp.exec_cmd('mute'), { locked=true, repeating=true })",
+        )
+        # bindel = repeating(e) + locked(l), suffix chars sorted.
+        assert _keywords(load_lua(path), "bindel") == [", XF86AudioMute, exec, mute"]
+
+    def test_bindm_mouse(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + mouse:272', hl.dsp.window.drag(), { mouse=true })",
+        )
+        # bindm without a trailing comma — Hyprland rejects ``bindm = …, movewindow,``
+        # with "too many args".
+        assert _keywords(load_lua(path), "bindm") == ["SUPER, mouse:272, movewindow"]
+
+    def test_bind_movefocus(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.bind('SUPER + left', hl.dsp.focus({ direction = 'left' }))")
+        assert _keywords(load_lua(path), "bind") == ["SUPER, left, movefocus, l"]
+
+    def test_bind_workspace_relative(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + mouse_up', hl.dsp.focus({ workspace = 'e+1' }))",
+        )
+        assert _keywords(load_lua(path), "bind") == ["SUPER, mouse_up, workspace, e+1"]
+
+    def test_bind_movetoworkspace_silent(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + 2', hl.dsp.window.move({ workspace = 2, silent = true }))",
+        )
+        assert _keywords(load_lua(path), "bind") == ["SUPER, 2, movetoworkspacesilent, 2"]
+
+    def test_bind_togglefloating(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + V', hl.dsp.window.float({ action = 'toggle' }))",
+        )
+        assert _keywords(load_lua(path), "bind") == ["SUPER, V, togglefloating"]
+
+    def test_bind_namespace_as_shorthand_dispatcher(self, tmp_path: Path) -> None:
+        # ``hl.dsp.workspace(N)`` is the shorthand form some hand-written
+        # configs use. The wrapper has to accept both the call-form here
+        # AND the dotted form (``hl.dsp.workspace.toggle_special(...)``)
+        # without one breaking the other.
+        path = _write_lua(
+            tmp_path,
+            (
+                "hl.bind('SUPER + 1', hl.dsp.workspace(1))\n"
+                "hl.bind('SUPER + S', hl.dsp.workspace.toggle_special('scratch'))\n"
+            ),
+        )
+        binds = _keywords(load_lua(path), "bind")
+        assert binds == [
+            "SUPER, 1, workspace, 1",
+            "SUPER, S, togglespecialworkspace, scratch",
+        ]
+
+    def test_for_loop_unrolled(self, tmp_path: Path) -> None:
+        # The real test of running real Lua: a loop should produce N records.
+        path = _write_lua(
+            tmp_path,
+            """
+            local mainMod = 'SUPER'
+            for i = 1, 3 do
+                hl.bind(mainMod .. ' + ' .. i, hl.dsp.focus({ workspace = i }))
+            end
+            """,
+        )
+        binds = _keywords(load_lua(path), "bind")
+        assert binds == [
+            "SUPER, 1, workspace, 1",
+            "SUPER, 2, workspace, 2",
+            "SUPER, 3, workspace, 3",
+        ]
+
+
+class TestDofileChain:
+    def test_dofile_follows_into_subfile(self, tmp_path: Path) -> None:
+        (tmp_path / "child.lua").write_text("hl.env('A', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"dofile('{tmp_path / 'child.lua'}')\n")
+        assert _keywords(load_lua(main), "env") == ["A, 1"]
+
+    def test_source_name_tracks_origin_file(self, tmp_path: Path) -> None:
+        # hyprmod needs to know which file each line came from so it can
+        # skip its own managed sidecar when surfacing "external" entries.
+        (tmp_path / "child.lua").write_text("hl.env('FROM_CHILD', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"hl.env('FROM_MAIN', '0')\ndofile('{tmp_path / 'child.lua'}')\n")
+        doc = load_lua(main)
+        by_value = {
+            ln.value: ln.source_name for _, ln in doc.iter_lines() if isinstance(ln, Keyword)
+        }
+        assert by_value["FROM_MAIN, 0"] == str(main)
+        assert by_value["FROM_CHILD, 1"] == str(tmp_path / "child.lua")
+
+    def test_nested_dofile(self, tmp_path: Path) -> None:
+        (tmp_path / "leaf.lua").write_text("hl.env('X', '1')\n")
+        (tmp_path / "mid.lua").write_text(f"dofile('{tmp_path / 'leaf.lua'}')\n")
+        (tmp_path / "main.lua").write_text(f"dofile('{tmp_path / 'mid.lua'}')\n")
+        assert _keywords(load_lua(tmp_path / "main.lua"), "env") == ["X, 1"]
+
+    def test_dofile_produces_source_node_with_sub_document(self, tmp_path: Path) -> None:
+        # The tree shape must mirror what the Hyprlang parser produces
+        # for ``source = …`` so consumers iterate either format the same
+        # way. A ``dofile("child.lua")`` becomes a :class:`Source` node on
+        # the parent whose ``.documents`` holds the parsed sub-Document.
+        from hyprland_config import Source
+
+        child = tmp_path / "child.lua"
+        child.write_text("hl.env('A', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"dofile('{child}')\n")
+        doc = load_lua(main)
+
+        sources = [ln for ln in doc.lines if isinstance(ln, Source)]
+        assert len(sources) == 1
+        src = sources[0]
+        assert src.path_str == str(child)
+        assert src.resolved_paths == [child.resolve()]
+        assert len(src.documents) == 1
+        assert src.documents[0].path == child
+        assert any(isinstance(ln, Keyword) and ln.key == "env" for ln in src.documents[0].lines)
+
+    def test_nested_dofile_produces_nested_documents(self, tmp_path: Path) -> None:
+        # Source nodes nest just like Hyprlang ``source = …`` chains:
+        # main → mid → leaf becomes Source(Source(Keyword)).
+        from hyprland_config import Source
+
+        (tmp_path / "leaf.lua").write_text("hl.env('X', '1')\n")
+        (tmp_path / "mid.lua").write_text(f"dofile('{tmp_path / 'leaf.lua'}')\n")
+        (tmp_path / "main.lua").write_text(f"dofile('{tmp_path / 'mid.lua'}')\n")
+        doc = load_lua(tmp_path / "main.lua")
+
+        mid_src = next(ln for ln in doc.lines if isinstance(ln, Source))
+        mid_doc = mid_src.documents[0]
+        leaf_src = next(ln for ln in mid_doc.lines if isinstance(ln, Source))
+        leaf_doc = leaf_src.documents[0]
+        assert leaf_doc.path == (tmp_path / "leaf.lua")
+        assert any(isinstance(ln, Keyword) and ln.value == "X, 1" for ln in leaf_doc.lines)
+
+    def test_dofile_failure_does_not_abort_parent(self, tmp_path: Path) -> None:
+        # A missing sub-file shouldn't take the whole read down — Hyprland
+        # itself logs the error and continues, and we want the same UX.
+        main = tmp_path / "main.lua"
+        main.write_text(
+            f"hl.env('A', '1')\ndofile('{tmp_path / 'missing.lua'}')\nhl.env('B', '2')\n"
+        )
+        assert _keywords(load_lua(main), "env") == ["A, 1", "B, 2"]
+
+
+class TestExcludeSourcesOnLuaDocument:
+    """``exclude_sources`` must work on flat Lua-derived Documents.
+
+    The Lua reader merges ``dofile`` chains inline (no :class:`Source`
+    nodes wrap sub-files), so Source-level exclusion alone misses them.
+    hyprmod's "what would this value be without our managed sidecar?"
+    flow (``HyprlandState.get_fallback_value``) relies on this — without
+    it, removing an override in the GUI falls back to the schema default
+    instead of the value the user actually has in their main config.
+    """
+
+    def test_get_excludes_lines_from_named_sub_file(self, tmp_path: Path) -> None:
+        child = tmp_path / "child.lua"
+        child.write_text("hl.config({ general = { gaps_out = 10 } })\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"hl.config({{ general = {{ gaps_out = 5 }} }})\ndofile('{child}')\n")
+        doc = load_lua(main)
+        # Without exclusion, the child (later in evaluation order) wins.
+        assert doc.get("general:gaps_out") == "10"
+        # Excluding the child file recovers the parent's value — the
+        # "what would this be without our sidecar?" semantics hyprmod
+        # uses for fallback resolution.
+        assert doc.get("general:gaps_out", exclude_sources=frozenset({child.resolve()})) == "5"
+
+    def test_get_returns_default_when_all_sources_excluded(self, tmp_path: Path) -> None:
+        child = tmp_path / "child.lua"
+        child.write_text("hl.config({ general = { gaps_out = 10 } })\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"dofile('{child}')\n")
+        doc = load_lua(main)
+        excluded = frozenset({child.resolve()})
+        assert doc.get("general:gaps_out", exclude_sources=excluded) is None
+
+    def test_get_unchanged_when_excluded_path_unrelated(self, tmp_path: Path) -> None:
+        child = tmp_path / "child.lua"
+        child.write_text("hl.config({ general = { gaps_out = 10 } })\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"dofile('{child}')\n")
+        doc = load_lua(main)
+        unrelated = frozenset({(tmp_path / "nothing.lua").resolve()})
+        # An exclude_sources entry that matches no line should be a no-op.
+        assert doc.get("general:gaps_out", exclude_sources=unrelated) == "10"
+
+    def test_find_all_respects_exclude_sources(self, tmp_path: Path) -> None:
+        # Repeated keywords (env / bind / monitor) flow through
+        # ``find_all`` rather than ``get``; same exclude semantics.
+        child = tmp_path / "child.lua"
+        child.write_text("hl.env('FROM_CHILD', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text(f"hl.env('FROM_MAIN', '0')\ndofile('{child}')\n")
+        doc = load_lua(main)
+        values = [
+            ln.value for ln in doc.find_all("env", exclude_sources=frozenset({child.resolve()}))
+        ]
+        assert values == ["FROM_MAIN, 0"]
+
+
+class TestErrors:
+    def test_missing_file(self, tmp_path: Path) -> None:
+        with pytest.raises(LuaReaderError, match="lua failed to load"):
+            load_lua(tmp_path / "does_not_exist.lua")
+
+    def test_syntax_error_surfaces(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "this is not valid lua {{{\n")
+        with pytest.raises(LuaReaderError):
+            load_lua(path)
+
+
+class TestRoundTripWithEmitter:
+    """``parse_string`` → ``serialize_lua`` → ``load_lua`` keeps the
+    same option set."""
+
+    @staticmethod
+    def _via_lua(src: str, tmp_path: Path):
+        emitted = serialize_lua(parse_string(src))
+        path = tmp_path / "rt.lua"
+        path.write_text(emitted)
+        return load_lua(path)
+
+    def test_round_trip_options(self, tmp_path: Path) -> None:
+        src = (
+            "general:gaps_in = 5\n"
+            "decoration:rounding = 10\n"
+            "decoration:blur:size = 3\n"
+            "misc:vrr = true\n"
+        )
+        doc = self._via_lua(src, tmp_path)
+        assert _assignments(doc) == {
+            "general:gaps_in": "5",
+            "decoration:rounding": "10",
+            "decoration:blur:size": "3",
+            "misc:vrr": "true",
+        }
+
+    def test_round_trip_env_and_bezier_and_animation(self, tmp_path: Path) -> None:
+        src = (
+            "env = XCURSOR_SIZE, 24\n"
+            "bezier = easeOut, 0.05, 0.9, 0.1, 1.05\n"
+            "animation = windows, 1, 7, easeOut, slide\n"
+        )
+        doc = self._via_lua(src, tmp_path)
+        assert _keywords(doc, "env") == ["XCURSOR_SIZE, 24"]
+        assert _keywords(doc, "bezier") == ["easeOut, 0.05, 0.9, 0.1, 1.05"]
+        # Round-trip normalises the legacy ``1`` to the canonical ``true``.
+        assert _keywords(doc, "animation") == ["windows, true, 7, easeOut, slide"]
+
+    def test_round_trip_exec_and_exec_shutdown(self, tmp_path: Path) -> None:
+        # Emitter wraps exec lines in ``hl.on("hyprland.start", function() … end)``;
+        # the reader has to execute the callback to recover them.
+        src = "exec = waybar\nexec-once = nm-applet\nexec-shutdown = sync\n"
+        doc = self._via_lua(src, tmp_path)
+        # exec-once collapses to exec (Lua's hl.on fires on every reload —
+        # there's no run-once semantics to preserve).
+        assert _keywords(doc, "exec") == ["waybar", "nm-applet"]
+        assert _keywords(doc, "exec-shutdown") == ["sync"]
+
+    def test_round_trip_multi_file_tree(self, tmp_path: Path) -> None:
+        (tmp_path / "binds.conf").write_text(
+            "bind = SUPER, Q, killactive,\nbind = SUPER, return, exec, kitty\n"
+        )
+        (tmp_path / "general.conf").write_text("general:gaps_in = 5\nmisc:vrr = 1\n")
+        main = tmp_path / "hyprland.conf"
+        main.write_text(
+            f"source = {tmp_path / 'binds.conf'}\nsource = {tmp_path / 'general.conf'}\n"
+        )
+        from hyprland_config import load
+
+        tree = serialize_lua_tree(load(main))
+        # Write the emitted files to their natural paths next to the .conf.
+        for entry in tree:
+            entry.path.write_text(entry.content)
+
+        doc = load_lua(main.with_suffix(".lua"))
+        assert _keywords(doc, "bind")[:2] == [
+            "SUPER, Q, killactive",
+            "SUPER, return, exec, kitty",
+        ]
+        assert _assignments(doc)["general:gaps_in"] == "5"

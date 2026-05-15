@@ -3,9 +3,8 @@
 import re
 from pathlib import Path
 
-from hyprland_config._bind import is_bind_keyword
-from hyprland_config._expr import expand_value
-from hyprland_config._model import (
+from hyprland_config._core._expr import expand_value
+from hyprland_config._core._model import (
     Assignment,
     BlankLine,
     Comment,
@@ -19,7 +18,8 @@ from hyprland_config._model import (
     Source,
     Variable,
 )
-from hyprland_config._source import SourceCycleError, resolve_source_paths
+from hyprland_config._hyprlang._bind import is_bind_keyword
+from hyprland_config._hyprlang._source import SourceCycleError, resolve_source_paths
 
 
 class ParseError(Exception):
@@ -47,6 +47,8 @@ _STATIC_KEYWORD_NAMES = frozenset(
         "layerrule",
         "plugin",
         "submap",
+        "gesture",
+        "permission",
     )
 )
 

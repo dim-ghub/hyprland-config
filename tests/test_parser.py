@@ -15,6 +15,7 @@ from hyprland_config import (
     Source,
     Variable,
     parse_string,
+    serialize_hyprlang,
 )
 
 # ---------------------------------------------------------------------------
@@ -25,88 +26,88 @@ from hyprland_config import (
 class TestRoundTrip:
     def test_empty(self):
         doc = parse_string("")
-        assert doc.serialize() == ""
+        assert serialize_hyprlang(doc) == ""
 
     def test_blank_lines(self):
         text = "\n\n\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_comments(self):
         text = "# This is a comment\n# Another comment\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_simple_assignment(self):
         text = "gaps_in = 5\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_section_block(self):
         text = "general {\n    gaps_in = 5\n    gaps_out = 10\n}\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_nested_sections(self):
         text = "decoration {\n    shadow {\n        range = 10\n    }\n}\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_variable_definition(self):
         text = "$mainMod = SUPER\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_variable_with_hyphen(self):
         text = "$terminal-float = kitty --class kitty-floating\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
         assert doc.variables["terminal-float"] == "kitty --class kitty-floating"
 
     def test_bind_keyword(self):
         text = "bind = SUPER, Q, killactive,\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_source_directive(self):
         text = "source = ~/.config/hypr/hyprland.conf.d/*\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_inline_comment(self):
         text = "bind = $mainMod, P, pseudo # dwindle\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_env_keyword(self):
         text = "env = LIBVA_DRIVER_NAME,nvidia\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_monitor_keyword(self):
         text = "monitor = DP-2, 3440x1440@165, 0x0, 1, bitdepth, 10, cm, srgb\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_exec_once(self):
         text = "exec-once = ~/.config/hypr/autostart.sh\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_workspace_keyword(self):
         text = "workspace = 1, monitor:DP-2, default:true\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_windowrule(self):
         text = "windowrule = float on, match:class Electron\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_no_trailing_newline(self):
         text = "key = value"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ class TestRealConfigs:
         for path in files:
             text = path.read_text()
             doc = parse_string(text, name=str(path))
-            result = doc.serialize()
+            result = serialize_hyprlang(doc)
             assert result == text, f"Round-trip failed for {path}"
 
 
@@ -288,12 +289,12 @@ class TestEscapedHash:
     def test_escaped_hash_round_trip(self):
         text = "key = value with ## hash\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_escaped_hash_round_trip_with_comment(self):
         text = "key = val ## lit # comment\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +305,7 @@ class TestEscapedHash:
 class TestOneLineBlocks:
     def test_one_line_block(self):
         doc = parse_string("general { gaps_in = 5 }\n")
-        assert doc.serialize() == "general { gaps_in = 5 }\n"
+        assert serialize_hyprlang(doc) == "general { gaps_in = 5 }\n"
         node = doc.lines[0]
         assert isinstance(node, Assignment)
         assert node.full_key == "general:gaps_in"

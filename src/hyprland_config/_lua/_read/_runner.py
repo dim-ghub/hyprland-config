@@ -1,0 +1,102 @@
+"""Public entry: load a Hyprland Lua config file into a :class:`Document`.
+
+Drives the Lua wrapper script (``_wrapper.lua``) via subprocess, parses
+its JSON record stream, and feeds the records to
+:func:`._records.records_to_document`.
+
+The only runtime requirement is a ``lua`` binary on ``PATH``. Any
+machine running Hyprland 0.55+ with a Lua config has one — if it
+didn't, Hyprland itself couldn't load the config. :func:`load_lua`
+raises :class:`LuaReaderError` with a clear message when ``lua`` is
+missing so calling code can surface that to the user.
+"""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from hyprland_config._core._model import Document
+from hyprland_config._hyprlang._parser import ParseError
+from hyprland_config._lua._read._records import records_to_document
+
+# The wrapper script lives next to this module — keep it as a sibling
+# .lua file rather than an embedded string so a Lua-aware editor (or
+# ``luac -p``) can verify it independently.
+_WRAPPER_SCRIPT = Path(__file__).parent / "_wrapper.lua"
+
+# How long we'll wait for the user's config to finish. A pathological
+# ``for`` loop or busy callback would otherwise hang the reader; 10s is
+# generous for any realistic config (Hyprland's own timeouts are far
+# tighter).
+_LUA_TIMEOUT_SECONDS = 10
+
+
+class LuaReaderError(ParseError):
+    """Raised when the Lua reader can't produce a Document.
+
+    Subclasses :class:`ParseError` so callers can catch both Hyprlang and
+    Lua read failures with one ``except``. Covers three broad cases:
+    ``lua`` is missing from ``PATH``, the user's Lua file failed to
+    load/execute, and unparseable wrapper output.
+    """
+
+
+def load_lua(path: str | Path) -> Document:
+    """Parse a Hyprland Lua config file and return a :class:`Document`.
+
+    Walks ``dofile("…")`` chains transparently and builds the same
+    tree-shaped Document the Hyprlang parser produces: each sub-file
+    becomes a nested :class:`Document` wrapped in a :class:`Source`
+    node on its parent. Consumers can iterate the result with the
+    same ``recursive`` / ``exclude_sources`` semantics regardless of
+    whether the on-disk format is Hyprlang or Lua.
+
+    Comments, blank lines, and the user's local variable assignments
+    aren't preserved — only the *effects* of running the config (i.e.
+    everything ``hl.*`` was called with) appear in the Document.
+    """
+    entry = Path(path).expanduser()
+    return records_to_document(_run_wrapper(entry), entry_path=entry)
+
+
+def _run_wrapper(path: Path) -> list[dict[str, Any]]:
+    """Invoke the Lua wrapper and parse its stdout into records."""
+    lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("lua5.3")
+    if lua is None:
+        raise LuaReaderError(
+            "the `lua` interpreter is required to read Lua-mode Hyprland "
+            "configs; install it via your distro's package manager "
+            "(usually `lua` or `lua5.4`) and try again."
+        )
+
+    try:
+        result = subprocess.run(
+            [lua, str(_WRAPPER_SCRIPT), str(path)],
+            capture_output=True,
+            text=True,
+            timeout=_LUA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LuaReaderError(
+            f"reading {path} timed out after {_LUA_TIMEOUT_SECONDS}s — "
+            "check for infinite loops in the config."
+        ) from exc
+
+    if result.returncode != 0:
+        raise LuaReaderError(
+            f"lua failed to load {path}: {result.stderr.strip() or 'unknown error'}"
+        )
+
+    records: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise LuaReaderError(
+                f"wrapper produced unparseable output line: {line!r} ({exc})"
+            ) from exc
+    return records

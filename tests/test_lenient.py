@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from hyprland_config import ErrorLine, ParseError, load, parse_file, parse_string
+from hyprland_config import (
+    ErrorLine,
+    ParseError,
+    load,
+    parse_file,
+    parse_string,
+    serialize_hyprlang,
+)
 
 
 class TestLenientParsing:
@@ -68,12 +75,12 @@ class TestLenientRoundTrip:
     def test_serialize_preserves_error_lines(self):
         text = "key = value\n@@@ bad\nother = ok\n"
         doc = parse_string(text, lenient=True)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_serialize_mixed_errors_and_sections(self):
         text = "general {\n    gaps_in = 5\n    @@@ bad\n}\n"
         doc = parse_string(text, lenient=True)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
 
 class TestLenientMultipleIssues:

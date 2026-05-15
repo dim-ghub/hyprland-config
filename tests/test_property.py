@@ -3,8 +3,7 @@
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from hyprland_config._model import Variable
-from hyprland_config._parser import ParseError, parse_string
+from hyprland_config import ParseError, Variable, parse_string, serialize_hyprlang
 
 # -- Strategies for generating valid Hyprland config fragments --
 
@@ -71,11 +70,11 @@ class TestRoundTripProperty:
     @given(config=hyprland_config())
     @settings(max_examples=50)
     def test_serialize_roundtrip(self, config: str):
-        """parse_string(doc.serialize()) produces identical serialization."""
+        """parse_string(serialize_hyprlang(doc)) produces identical serialization."""
         doc = parse_string(config)
-        serialized = doc.serialize()
+        serialized = serialize_hyprlang(doc)
         doc2 = parse_string(serialized)
-        assert doc2.serialize() == serialized
+        assert serialize_hyprlang(doc2) == serialized
 
     @given(config=hyprland_config())
     @settings(max_examples=50)
@@ -106,7 +105,7 @@ class TestRoundTripProperty:
         """Lenient mode produces identical results for valid configs."""
         strict = parse_string(config)
         lenient = parse_string(config, lenient=True)
-        assert strict.serialize() == lenient.serialize()
+        assert serialize_hyprlang(strict) == serialize_hyprlang(lenient)
         assert lenient.errors == []
 
 
@@ -128,7 +127,7 @@ class TestFuzzArbitraryInput:
         """Lenient mode must never crash, regardless of input."""
         doc = parse_string(text, lenient=True)
         assert doc is not None
-        doc.serialize()
+        serialize_hyprlang(doc)
 
     @given(text=_arbitrary_text)
     @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
@@ -136,6 +135,6 @@ class TestFuzzArbitraryInput:
         """Strict mode should only raise ParseError, never other exceptions."""
         try:
             doc = parse_string(text)
-            doc.serialize()
+            serialize_hyprlang(doc)
         except ParseError:
             pass

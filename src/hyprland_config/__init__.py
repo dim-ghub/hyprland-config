@@ -2,23 +2,26 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
-from hyprland_config._bind import BindData, is_bind_keyword, parse_bind_line
-from hyprland_config._expr import ExprError, evaluate_expression
-from hyprland_config._lua import serialize_lua
-from hyprland_config._migrate import (
-    ConfigDeprecation,
-    MigrationResult,
-    check_deprecated,
-    migrate,
+from hyprland_config._converter import (
+    ConversionPlan,
+    ConversionResult,
+    UnmappedLine,
+    analyze_conversion,
+    execute_conversion,
 )
-from hyprland_config._model import (
+from hyprland_config._core import (
     Assignment,
+    BindData,
     BlankLine,
+    Color,
     Comment,
     Conditional,
     Document,
     ErrorLine,
+    ExprError,
+    Gradient,
     KeyValueLine,
     Keyword,
     Line,
@@ -26,17 +29,39 @@ from hyprland_config._model import (
     SectionOpen,
     Source,
     Variable,
+    Vec2,
+    atomic_write,
+    coerce_config_value,
+    evaluate_expression,
+    normalize_gradient_string,
+    parse_version,
+    value_to_conf,
 )
-from hyprland_config._parser import (
+from hyprland_config._hyprlang import (
+    ConfigDeprecation,
+    MigrationResult,
     ParseError,
+    SourceCycleError,
+    check_deprecated,
+    is_bind_keyword,
     is_keyword,
+    migrate,
+    parse_bind_line,
     parse_file,
     parse_string,
+    serialize_hyprlang,
 )
-from hyprland_config._source import SourceCycleError
-from hyprland_config._types import Color, Gradient, Vec2
-from hyprland_config._values import coerce_config_value, value_to_conf
-from hyprland_config._writer import atomic_write
+from hyprland_config._lua import (
+    LuaFile,
+    LuaReaderError,
+    define_submap_to_lua,
+    dispatch_to_lua,
+    emit_keyword_line,
+    emit_option_assignment,
+    load_lua,
+    serialize_lua,
+    serialize_lua_tree,
+)
 
 
 def parse_to_dict(
@@ -59,13 +84,32 @@ def parse_to_dict(
     return doc.to_dict()
 
 
-def _default_config() -> Path:
-    """Resolve the default Hyprland config path at call time."""
-    # Treat an empty XDG_CONFIG_HOME the same as unset — otherwise we'd build
-    # a relative path against the current working directory.
+def default_config_dir() -> Path:
+    """Return ``$XDG_CONFIG_HOME/hypr`` (or ``~/.config/hypr`` if unset)."""
     xdg = os.environ.get("XDG_CONFIG_HOME") or None
     base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "hypr" / "hyprland.conf"
+    return base / "hypr"
+
+
+def default_hyprlang_entrypoint() -> Path:
+    """Path of the canonical Hyprlang entrypoint (``hyprland.conf``)."""
+    return default_config_dir() / "hyprland.conf"
+
+
+def default_lua_entrypoint() -> Path:
+    """Path of the Hyprland 0.55+ Lua entrypoint (``hyprland.lua``)."""
+    return default_config_dir() / "hyprland.lua"
+
+
+def default_entrypoint() -> Path:
+    """Return whichever entrypoint Hyprland would load.
+
+    Hyprland 0.55+ prefers ``hyprland.lua`` when present, falling back
+    to ``hyprland.conf``. Pre-0.55 only ever reads ``hyprland.conf``.
+    Returns the Hyprlang path when neither exists yet.
+    """
+    lua = default_lua_entrypoint()
+    return lua if lua.exists() else default_hyprlang_entrypoint()
 
 
 def load(
@@ -92,12 +136,66 @@ def load(
     instead of raising ``ParseError``.  Access them via ``doc.errors``.
     """
     if path is None:
-        path = _default_config()
+        path = default_hyprlang_entrypoint()
         if not path.exists():
             raise FileNotFoundError(
                 f"Hyprland config not found at {path}. Pass an explicit path to load()."
             )
     return parse_file(Path(path).expanduser(), follow_sources=follow_sources, lenient=lenient)
+
+
+def load_any(
+    path: str | Path,
+    *,
+    follow_sources: bool = True,
+    lenient: bool = False,
+) -> Document:
+    """Load a Hyprland config, picking Hyprlang or Lua based on the suffix.
+
+    Convenience for callers that don't know in advance which format the
+    user has on disk. ``.lua`` paths go through :func:`load_lua`, anything
+    else through :func:`load`. ``follow_sources`` and ``lenient`` are
+    forwarded to the Hyprlang loader (the Lua reader walks ``dofile``
+    chains unconditionally and ignores both).
+    """
+    target = Path(path).expanduser()
+    if target.suffix == ".lua":
+        return load_lua(target)
+    return load(target, follow_sources=follow_sources, lenient=lenient)
+
+
+def serialize_any(doc: Document, path: str | Path) -> str:
+    """Render *doc* in the format implied by *path*'s suffix.
+
+    Symmetric counterpart to :func:`load_any` — ``.lua`` paths route
+    through :func:`serialize_lua`, anything else through
+    :func:`serialize_hyprlang`. The path is inspected only for its
+    suffix; no I/O is performed.
+    """
+    if Path(path).suffix == ".lua":
+        return serialize_lua(doc)
+    return serialize_hyprlang(doc)
+
+
+def keyword_to_lua(key: str, value: Any) -> str:
+    """Translate a single ``key = value`` line to its Lua ``hl.*`` form.
+
+    Suitable as the body of a ``hyprctl eval``. Keywords (``bind``,
+    ``env``, ``monitor``, …) route to their dedicated emitter; option
+    assignments (``general:gaps_in``, …) emit a single ``hl.config({...})``
+    call with the value nested at the right depth.
+
+    Raises ``ValueError`` when the keyword has no Lua equivalent the
+    emitter can produce (``submap``, an unmapped dispatcher, a malformed
+    line).
+    """
+    value_str = str(value)
+    if is_keyword(key):
+        snippet = emit_keyword_line(key, value_str)
+        if snippet is None:
+            raise ValueError(f"No Lua mapping for keyword {key!r} = {value_str!r}")
+        return snippet
+    return emit_option_assignment(key, value_str)
 
 
 __all__ = [
@@ -108,6 +206,8 @@ __all__ = [
     "Comment",
     "Conditional",
     "ConfigDeprecation",
+    "ConversionPlan",
+    "ConversionResult",
     "Document",
     "ErrorLine",
     "ExprError",
@@ -115,26 +215,45 @@ __all__ = [
     "Keyword",
     "KeyValueLine",
     "Line",
+    "LuaFile",
+    "LuaReaderError",
     "MigrationResult",
     "ParseError",
     "SectionClose",
     "SectionOpen",
     "Source",
     "SourceCycleError",
+    "UnmappedLine",
     "Variable",
     "Vec2",
+    "analyze_conversion",
     "atomic_write",
     "check_deprecated",
     "coerce_config_value",
+    "default_config_dir",
+    "default_entrypoint",
+    "default_hyprlang_entrypoint",
+    "default_lua_entrypoint",
+    "define_submap_to_lua",
+    "dispatch_to_lua",
     "evaluate_expression",
+    "execute_conversion",
     "is_bind_keyword",
     "is_keyword",
+    "keyword_to_lua",
     "load",
+    "load_any",
+    "load_lua",
     "migrate",
+    "normalize_gradient_string",
     "parse_bind_line",
-    "parse_to_dict",
     "parse_file",
     "parse_string",
+    "parse_to_dict",
+    "parse_version",
+    "serialize_any",
+    "serialize_hyprlang",
     "serialize_lua",
+    "serialize_lua_tree",
     "value_to_conf",
 ]

@@ -2,8 +2,8 @@
 
 import pytest
 
-from hyprland_config import evaluate_expression, parse_string
-from hyprland_config._expr import ExprError, expand_expressions
+from hyprland_config import ExprError, evaluate_expression, parse_string
+from hyprland_config._core._expr import expand_expressions
 
 
 class TestEvaluateExpression:

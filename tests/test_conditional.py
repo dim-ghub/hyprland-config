@@ -4,6 +4,7 @@ from hyprland_config import (
     Comment,
     Conditional,
     parse_string,
+    serialize_hyprlang,
 )
 
 
@@ -74,7 +75,7 @@ class TestNoerrorDirective:
     def test_noerror_round_trip(self):
         text = "# hyprlang noerror true\nbind = MOD, KEY, exec, cmd\n# hyprlang noerror false\n"
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_noerror_not_a_comment(self):
         doc = parse_string("# hyprlang noerror true\n")
@@ -93,7 +94,7 @@ class TestConditionalRoundTrip:
             "# hyprlang endif\n"
         )
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_nested_conditionals_round_trip(self):
         text = (
@@ -104,7 +105,7 @@ class TestConditionalRoundTrip:
             "# hyprlang endif\n"
         )
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
     def test_elif_chain_round_trip(self):
         text = (
@@ -117,7 +118,7 @@ class TestConditionalRoundTrip:
             "# hyprlang endif\n"
         )
         doc = parse_string(text)
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text
 
 
 class TestConditionalNodeTypes:
@@ -148,4 +149,4 @@ class TestConditionalNodeTypes:
         assert doc.lines[1].kind == "if"
         assert isinstance(doc.lines[3], Conditional)
         assert doc.lines[3].kind == "endif"
-        assert doc.serialize() == text
+        assert serialize_hyprlang(doc) == text

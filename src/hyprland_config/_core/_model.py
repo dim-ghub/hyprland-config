@@ -7,9 +7,9 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import cast
 
-from hyprland_config._expr import expand_value
-from hyprland_config._values import value_to_conf
-from hyprland_config._writer import atomic_write
+from hyprland_config._core._expr import expand_value
+from hyprland_config._core._values import value_to_conf
+from hyprland_config._core._writer import atomic_write
 
 _INDENT = "    "
 
@@ -282,29 +282,12 @@ class Document:
                 result = (doc, line)
         return result
 
-    def _remove_matching_lines(self, predicate: Callable[[Line], bool]) -> None:
+    def remove_matching_lines(self, predicate: Callable[[Line], bool]) -> None:
         """Remove lines matching predicate and mark dirty if any were removed."""
         before = len(self.lines)
         self.lines = [line for line in self.lines if not predicate(line)]
         if len(self.lines) != before:
             self.mark_dirty()
-
-    def serialize(self) -> str:
-        """Reconstruct the original file text from line nodes."""
-        return "".join(line.raw for line in self.lines)
-
-    def serialize_lua(self) -> str:
-        """Render this document as a Hyprland Lua config (v0.55.0+).
-
-        One-way emitter: comments, blanks, and variables aren't preserved,
-        and only Phase-1 keywords (``env``, ``monitor``, ``bezier``,
-        ``animation``) plus category-keyed assignments are translated.
-        Keywords outside that set appear as TODO markers in the output.
-        See ``hyprland_config._lua`` for details and coverage roadmap.
-        """
-        from hyprland_config._lua import serialize_lua
-
-        return serialize_lua(self)
 
     # -- Query API --
 
@@ -437,7 +420,7 @@ class Document:
             kv_line.update_raw()
             target_doc.mark_dirty()
         else:
-            self._insert_assignment(key, value)
+            self.insert_assignment(key, value)
             self.mark_dirty()
 
     def remove(self, key: str, *, recursive: bool | None = None) -> None:
@@ -447,7 +430,7 @@ class Document:
         """
         match = _key_predicate(key)
         for doc in self.target_documents(recursive):
-            doc._remove_matching_lines(match)
+            doc.remove_matching_lines(match)
 
     def remove_where(
         self, keyword: str, predicate: Callable[[str], bool], *, recursive: bool | None = None
@@ -458,7 +441,7 @@ class Document:
         recursive defaults to True when sources were followed during parsing.
         """
         for doc in self.target_documents(recursive):
-            doc._remove_matching_lines(
+            doc.remove_matching_lines(
                 lambda ln: isinstance(ln, Keyword) and ln.key == keyword and predicate(ln.value)
             )
 
@@ -497,11 +480,16 @@ class Document:
 
     # -- Insert helpers --
 
-    def _insert_assignment(self, key: str, value: str) -> None:
-        """Insert a new assignment, respecting the document's style."""
+    def insert_assignment(self, key: str, value: str, *, inline_comment: str = "") -> None:
+        """Insert a new assignment, respecting the document's style.
+
+        *inline_comment* is preserved on the new line (callers moving an
+        existing line into a different section pass through the original
+        comment to keep the round-trip contract).
+        """
         parts = key.split(":")
         if len(parts) == 1:
-            self._append_flat_assignment(key, value, key)
+            self._append_flat_assignment(key, value, key, inline_comment)
             return
 
         section_path = parts[:-1]
@@ -511,23 +499,32 @@ class Document:
         if insert_idx is not None:
             indent = _INDENT * len(section_path)
             node = Assignment(
-                raw=_format_kv_line(indent, leaf_key, value),
+                raw=_format_kv_line(indent, leaf_key, value, inline_comment),
                 key=leaf_key,
                 value=value,
                 full_key=key,
+                inline_comment=inline_comment,
             )
             self.lines.insert(insert_idx, node)
             return
 
         if self._uses_sections():
-            self._create_section_with_assignment(section_path, leaf_key, value, key)
+            self._create_section_with_assignment(section_path, leaf_key, value, key, inline_comment)
         else:
-            self._append_flat_assignment(key, value, key)
+            self._append_flat_assignment(key, value, key, inline_comment)
 
-    def _append_flat_assignment(self, key: str, value: str, full_key: str) -> None:
+    def _append_flat_assignment(
+        self, key: str, value: str, full_key: str, inline_comment: str = ""
+    ) -> None:
         """Append a top-level (unindented) assignment line."""
         self.lines.append(
-            Assignment(raw=_format_kv_line("", key, value), key=key, value=value, full_key=full_key)
+            Assignment(
+                raw=_format_kv_line("", key, value, inline_comment),
+                key=key,
+                value=value,
+                full_key=full_key,
+                inline_comment=inline_comment,
+            )
         )
 
     def _find_section_insert_point(self, section_path: list[str]) -> int | None:
@@ -555,7 +552,12 @@ class Document:
         return any(isinstance(line, SectionOpen) for line in self.lines)
 
     def _create_section_with_assignment(
-        self, section_path: list[str], leaf_key: str, value: str, full_key: str
+        self,
+        section_path: list[str],
+        leaf_key: str,
+        value: str,
+        full_key: str,
+        inline_comment: str = "",
     ) -> None:
         """Create nested section blocks with an assignment inside."""
         if self.lines and not isinstance(self.lines[-1], BlankLine):
@@ -568,10 +570,11 @@ class Document:
         inner_indent = _INDENT * len(section_path)
         self.lines.append(
             Assignment(
-                raw=_format_kv_line(inner_indent, leaf_key, value),
+                raw=_format_kv_line(inner_indent, leaf_key, value, inline_comment),
                 key=leaf_key,
                 value=value,
                 full_key=full_key,
+                inline_comment=inline_comment,
             )
         )
 
@@ -695,5 +698,5 @@ class Document:
             target = path or self.path
             if target is None:
                 raise ValueError("No path specified and document has no path")
-            atomic_write(target, self.serialize())
+            atomic_write(target, "".join(line.raw for line in self.lines))
             self.dirty = False
