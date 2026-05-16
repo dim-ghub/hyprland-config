@@ -19,14 +19,16 @@ from hyprland_config._lua._read._dispatchers import dispatcher_to_hyprlang
 _FLAG_TO_SUFFIX = {flag: ch for ch, flag in BIND_FLAG_MAP.items()}
 
 
-def emit_bind_value(args: list[Any]) -> tuple[str, str] | None:
+def bind_value(args: list[Any]) -> tuple[str, str] | None:
     """Render ``hl.bind(keys, dispatcher, flags?)`` to ``(bind_type, value)``.
 
-    Returns ``None`` when *args* is empty (nothing to emit). Mirrors
-    :meth:`BindData.to_line`: mods are space-joined, and the trailing
-    comma is omitted when ``arg`` is empty (``bindm`` rejects a trailing
-    comma with "too many args" — other variants tolerate either form but
-    we keep the canonical shape across the board).
+    Mirrors the value-returning shape of :func:`monitor_value` /
+    :func:`animation_value` — pairs with :func:`unbind_value` for the
+    reverse direction. Returns ``None`` when *args* is empty. Output
+    mirrors :meth:`BindData.to_line`: mods are space-joined, and the
+    trailing comma is omitted when ``arg`` is empty (``bindm`` rejects a
+    trailing comma — other variants tolerate either form but we keep the
+    canonical shape across the board).
     """
     if not args:
         return None

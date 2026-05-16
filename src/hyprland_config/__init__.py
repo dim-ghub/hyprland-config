@@ -12,7 +12,17 @@ from hyprland_config._converter import (
     execute_conversion,
 )
 from hyprland_config._core import (
+    ANIM_CHILDREN,
+    ANIM_FLAT,
+    ANIM_LOOKUP,
+    ANIMATION_TREE,
+    HYPRLAND_NATIVE_CURVES,
+    LAYER_BOOL_EFFECTS,
+    V3_BOOL_EFFECTS,
+    V3_BOOL_MATCHERS,
+    AnimationData,
     Assignment,
+    BezierData,
     BindData,
     BlankLine,
     Color,
@@ -33,19 +43,17 @@ from hyprland_config._core import (
     atomic_write,
     coerce_config_value,
     evaluate_expression,
+    get_styles_for,
     normalize_gradient_string,
     parse_version,
+    split_top_level,
     value_to_conf,
 )
 from hyprland_config._hyprlang import (
-    ConfigDeprecation,
-    MigrationResult,
     ParseError,
     SourceCycleError,
-    check_deprecated,
     is_bind_keyword,
     is_keyword,
-    migrate,
     parse_bind_line,
     parse_file,
     parse_string,
@@ -61,6 +69,12 @@ from hyprland_config._lua import (
     load_lua,
     serialize_lua,
     serialize_lua_tree,
+)
+from hyprland_config._migrate import (
+    ConfigDeprecation,
+    MigrationResult,
+    check_deprecated,
+    migrate,
 )
 
 
@@ -199,7 +213,13 @@ def keyword_to_lua(key: str, value: Any) -> str:
 
 
 __all__ = [
+    "ANIM_CHILDREN",
+    "ANIM_FLAT",
+    "ANIM_LOOKUP",
+    "ANIMATION_TREE",
+    "AnimationData",
     "Assignment",
+    "BezierData",
     "BindData",
     "BlankLine",
     "Color",
@@ -212,8 +232,10 @@ __all__ = [
     "ErrorLine",
     "ExprError",
     "Gradient",
+    "HYPRLAND_NATIVE_CURVES",
     "Keyword",
     "KeyValueLine",
+    "LAYER_BOOL_EFFECTS",
     "Line",
     "LuaFile",
     "LuaReaderError",
@@ -224,6 +246,8 @@ __all__ = [
     "Source",
     "SourceCycleError",
     "UnmappedLine",
+    "V3_BOOL_EFFECTS",
+    "V3_BOOL_MATCHERS",
     "Variable",
     "Vec2",
     "analyze_conversion",
@@ -238,6 +262,7 @@ __all__ = [
     "dispatch_to_lua",
     "evaluate_expression",
     "execute_conversion",
+    "get_styles_for",
     "is_bind_keyword",
     "is_keyword",
     "keyword_to_lua",
@@ -255,5 +280,6 @@ __all__ = [
     "serialize_hyprlang",
     "serialize_lua",
     "serialize_lua_tree",
+    "split_top_level",
     "value_to_conf",
 ]

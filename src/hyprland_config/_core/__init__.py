@@ -6,6 +6,16 @@ Hyprland configuration. The :mod:`hyprland_config._hyprlang` and
 on-disk format to and from this AST.
 """
 
+from hyprland_config._core._animation import (
+    ANIM_CHILDREN,
+    ANIM_FLAT,
+    ANIM_LOOKUP,
+    ANIMATION_TREE,
+    HYPRLAND_NATIVE_CURVES,
+    AnimationData,
+    BezierData,
+    get_styles_for,
+)
 from hyprland_config._core._bind import BIND_FLAG_MAP, BindData
 from hyprland_config._core._expr import (
     ExprError,
@@ -28,6 +38,12 @@ from hyprland_config._core._model import (
     Source,
     Variable,
 )
+from hyprland_config._core._rules import (
+    LAYER_BOOL_EFFECTS,
+    V3_BOOL_EFFECTS,
+    V3_BOOL_MATCHERS,
+)
+from hyprland_config._core._split import split_top_level
 from hyprland_config._core._types import (
     Color,
     Gradient,
@@ -39,8 +55,14 @@ from hyprland_config._core._values import coerce_config_value, value_to_conf
 from hyprland_config._core._writer import atomic_write
 
 __all__ = [
+    "ANIM_CHILDREN",
+    "ANIM_FLAT",
+    "ANIM_LOOKUP",
+    "ANIMATION_TREE",
     "BIND_FLAG_MAP",
     "Assignment",
+    "AnimationData",
+    "BezierData",
     "BindData",
     "BlankLine",
     "Color",
@@ -50,12 +72,16 @@ __all__ = [
     "ErrorLine",
     "ExprError",
     "Gradient",
+    "HYPRLAND_NATIVE_CURVES",
     "KeyValueLine",
     "Keyword",
+    "LAYER_BOOL_EFFECTS",
     "Line",
     "SectionClose",
     "SectionOpen",
     "Source",
+    "V3_BOOL_EFFECTS",
+    "V3_BOOL_MATCHERS",
     "Variable",
     "Vec2",
     "atomic_write",
@@ -63,7 +89,9 @@ __all__ = [
     "evaluate_expression",
     "expand_expressions",
     "expand_value",
+    "get_styles_for",
     "normalize_gradient_string",
     "parse_version",
+    "split_top_level",
     "value_to_conf",
 ]

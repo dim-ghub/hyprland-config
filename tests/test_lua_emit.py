@@ -4,19 +4,24 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from hyprland_config import Document, load, parse_string, serialize_lua, serialize_lua_tree
-from tests._lua_helpers import HEADER, assert_lua_compiles, requires_lua
+from tests._lua_helpers import assert_lua_compiles, requires_lua
 
 
 class TestEmptyDocument:
-    def test_empty_doc_returns_header_only(self) -> None:
-        assert serialize_lua(Document()) == HEADER
+    def test_empty_doc_returns_empty_string(self) -> None:
+        # No built-in banner — consumers brand their own output via Comment
+        # nodes, so an empty Document renders as an empty string.
+        assert serialize_lua(Document()) == ""
 
     def test_parsed_empty_string(self) -> None:
-        assert serialize_lua(parse_string("")) == HEADER
+        assert serialize_lua(parse_string("")) == ""
 
-    def test_only_comments_returns_header_only(self) -> None:
-        # Comments aren't preserved in the Lua output.
-        assert serialize_lua(parse_string("# just a comment\n")) == HEADER
+    def test_only_comments_round_trip_as_lua_comments(self) -> None:
+        # Comments delimit topical groups in the Lua output; standalone
+        # comments survive as `--` lines so users keep the structure they
+        # wrote in Hyprlang.
+        out = serialize_lua(parse_string("# just a comment\n"))
+        assert "-- just a comment" in out
 
 
 class TestCategoryAssignments:
@@ -217,12 +222,75 @@ class TestStructure:
         assert config_idx < env_idx < todo_idx
 
 
+class TestCommentGrouping:
+    """Comments delimit topical groups: each becomes a ``-- header`` and
+    splits the following content into its own ``hl.config({...})`` call so
+    sections don't merge across boundaries.
+    """
+
+    def test_comment_becomes_lua_comment(self) -> None:
+        out = serialize_lua(parse_string("# Environment\nenv = X, 1\n"))
+        assert "-- Environment" in out
+        assert 'hl.env("X", "1")' in out
+        # Header appears before the call it labels.
+        assert out.index("-- Environment") < out.index("hl.env")
+
+    def test_two_comment_sections_split_config_calls(self) -> None:
+        # Without grouping, both assignments would merge into one
+        # hl.config({general = {...}, decoration = {...}}). With grouping,
+        # each section gets its own call under its own header.
+        config = "# General\ngeneral:gaps_in = 5\n\n# Decoration\ndecoration:rounding = 10\n"
+        out = serialize_lua(parse_string(config))
+        assert out.count("hl.config(") == 2
+        general_idx = out.index("-- General")
+        decoration_idx = out.index("-- Decoration")
+        assert general_idx < decoration_idx
+        # Each section's assignments stay under their own header.
+        assert out.index("gaps_in") < decoration_idx
+        assert out.index("rounding") > decoration_idx
+
+    def test_lines_before_first_comment_go_in_unnamed_group(self) -> None:
+        config = "general:gaps_in = 5\n# Decoration\ndecoration:rounding = 10\n"
+        out = serialize_lua(parse_string(config))
+        # The unnamed leading group emits before any `--` header.
+        first_config = out.index("hl.config(")
+        first_header = out.index("-- Decoration")
+        assert first_config < first_header
+        assert out.count("hl.config(") == 2
+
+    def test_empty_group_emits_header_only(self) -> None:
+        # A comment with no content following it (until the next comment or
+        # end of file) still produces a `--` line — preserves decorative
+        # banners and section stubs.
+        out = serialize_lua(parse_string("# Decorative banner\n# Real section\nenv = X, 1\n"))
+        assert "-- Decorative banner" in out
+        assert "-- Real section" in out
+
+    def test_exec_blocks_respect_groups(self) -> None:
+        # exec lines under different comment sections produce separate
+        # hl.on("hyprland.start", function() … end) blocks, not one merged.
+        config = "# Section A\nexec = waybar\n\n# Section B\nexec = nm-applet\n"
+        out = serialize_lua(parse_string(config))
+        assert out.count('hl.on("hyprland.start"') == 2
+
+    def test_no_comments_matches_legacy_layout(self) -> None:
+        # A config with no comments at all produces output indistinguishable
+        # from the pre-grouping behaviour: one hl.config, one block of extras.
+        out = serialize_lua(parse_string("general:gaps_in = 5\nenv = X, 1\n"))
+        assert out.count("hl.config(") == 1
+        assert out.count('hl.env("X", "1")') == 1
+        assert "--" not in out
+
+
 class TestCleanFileShape:
     def test_output_ends_with_newline(self) -> None:
         assert serialize_lua(parse_string("general:gaps_in = 5\n")).endswith("\n")
 
-    def test_header_present(self) -> None:
-        assert serialize_lua(parse_string("general:gaps_in = 5\n")).startswith(HEADER)
+    def test_no_built_in_banner(self) -> None:
+        # The library doesn't stamp its own ``-- Generated by …`` header;
+        # consumers add their own via Comment nodes if they want one.
+        out = serialize_lua(parse_string("general:gaps_in = 5\n"))
+        assert not out.startswith("--")
 
     def test_serialize_lua_is_module_level_function(self) -> None:
         # Both call paths should produce the same output.
@@ -520,8 +588,9 @@ class TestEmitterProperty:
     @settings(max_examples=80, suppress_health_check=[HealthCheck.too_slow])
     def test_serialize_lua_never_crashes(self, config: str) -> None:
         doc = parse_string(config, lenient=True)
-        out = serialize_lua(doc)
-        assert out.startswith(HEADER)
+        # The invariant under fuzz is "doesn't crash" — output shape is
+        # covered by the deterministic tests above.
+        serialize_lua(doc)
 
     @requires_lua
     @given(config=_hyprland_config())

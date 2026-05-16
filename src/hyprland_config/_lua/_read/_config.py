@@ -41,23 +41,18 @@ def emit_config_assignments(
             and not _looks_like_gradient(value)
         ):
             for leaf_key, leaf_value in value.items():
-                full_key = f"{prefix}{key}.{leaf_key}"
-                _add_one(doc, full_key, leaf_value, source=source)
+                _add_leaf(doc, f"{prefix}{key}.{leaf_key}", leaf_value, source=source)
             continue
 
         full_key = f"{prefix}{key}" if prefix else key
-        if isinstance(value, dict) and _looks_like_gradient(value):
-            _add_assignment(doc, full_key, _gradient_to_hyprlang(value), source=source)
-        elif isinstance(value, dict):
+        if isinstance(value, dict) and not _looks_like_gradient(value):
             emit_config_assignments(doc, value, prefix=full_key + ":", source=source)
-        elif isinstance(value, list):
-            _add_assignment(doc, full_key, _list_to_hyprlang(value), source=source)
         else:
-            _add_assignment(doc, full_key, scalar_to_hyprlang(value), source=source)
+            _add_leaf(doc, full_key, value, source=source)
 
 
-def _add_one(doc: Document, full_key: str, value: Any, *, source: str = "") -> None:
-    """Add a single Assignment, handling gradient/list/scalar shapes."""
+def _add_leaf(doc: Document, full_key: str, value: Any, *, source: str = "") -> None:
+    """Render a leaf value (gradient / list / scalar) to one Assignment line."""
     if isinstance(value, dict) and _looks_like_gradient(value):
         _add_assignment(doc, full_key, _gradient_to_hyprlang(value), source=source)
     elif isinstance(value, list):

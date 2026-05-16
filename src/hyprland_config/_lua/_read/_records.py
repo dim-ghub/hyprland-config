@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hyprland_config._core._model import Document, Keyword, Source
-from hyprland_config._lua._read._bind import emit_bind_value, unbind_value
+from hyprland_config._lua._read._bind import bind_value, unbind_value
 from hyprland_config._lua._read._config import emit_config_assignments, scalar_to_hyprlang
 from hyprland_config._lua._read._keywords import (
     animation_value,
@@ -182,7 +182,7 @@ def _handle_exec_cmd(doc: Document, args: list[Any], source: str) -> None:
 
 
 def _handle_bind(doc: Document, args: list[Any], source: str) -> None:
-    result = emit_bind_value(args)
+    result = bind_value(args)
     if result is None:
         return
     bind_type, value = result

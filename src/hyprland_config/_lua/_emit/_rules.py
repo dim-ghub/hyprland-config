@@ -8,6 +8,7 @@ the document walker because it spans multiple input lines.
 
 from typing import Any
 
+from hyprland_config._core._split import split_top_level
 from hyprland_config._lua._emit._format import coerce_value, format_table, split_csv
 
 
@@ -132,7 +133,9 @@ def _split_action_and_matchers(parts: list[str]) -> tuple[str, list[str]] | None
 
 def emit_windowrule(args: str, *, v2: bool) -> str:
     """Shared implementation for ``windowrule`` and ``windowrulev2``."""
-    parts = split_csv(args)
+    # Bracket-aware split: regex matchers like ``class:^(foo|bar,baz)$`` carry
+    # commas inside parens that a naive ``str.split(",")`` would mangle.
+    parts = split_top_level(args)
     split = _split_action_and_matchers(parts)
     if split is None:
         return f"-- malformed windowrule: {args}"
@@ -154,7 +157,8 @@ def emit_layerrule(args: str) -> str:
     token as the namespace regex when no ``match:`` prefix is present
     anywhere.
     """
-    parts = split_csv(args)
+    # Bracket-aware split — see emit_windowrule for the regex-matcher case.
+    parts = split_top_level(args)
     split = _split_action_and_matchers(parts)
     if split is None:
         return f"-- malformed layerrule: {args}"

@@ -6,6 +6,7 @@ mapping here keeps the live-apply path and the bulk emit path in sync.
 """
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from hyprland_config._hyprlang._bind import is_bind_keyword
@@ -45,23 +46,25 @@ from hyprland_config._lua._emit._rules import (
 # inside the ``hl.define_submap`` function body, so a per-line emitter can't
 # express it. Runtime callers compose the whole submap at once via
 # :func:`define_submap_to_lua` instead.
+# One-shot live-apply emitter for exec keywords: same translation as the
+# doc-walking path, but ``indent=0`` because the caller wants a stand-alone
+# snippet (not wrapped in an ``hl.on`` block).
+_emit_exec_toplevel = partial(translate_exec_arg, indent=0)
+
 STATIC_KEYWORD_EMITTERS: dict[str, Callable[[str], "str | None"]] = {
     "env": emit_env,
     "monitor": emit_monitor,
     "bezier": emit_bezier,
     "animation": emit_animation,
-    "windowrule": lambda v: emit_windowrule(v, v2=False),
-    "windowrulev2": lambda v: emit_windowrule(v, v2=True),
+    "windowrule": partial(emit_windowrule, v2=False),
+    "windowrulev2": partial(emit_windowrule, v2=True),
     "layerrule": emit_layerrule,
     "workspace": emit_workspace_rule,
     "gesture": emit_gesture,
     "permission": emit_permission,
-    # One-shot live-apply emitters: same translation as the doc-walking
-    # path, but ``indent=0`` because the caller wants a stand-alone
-    # snippet (not wrapped in an ``hl.on`` block).
-    "exec": lambda v: translate_exec_arg(v, indent=0),
-    "exec-once": lambda v: translate_exec_arg(v, indent=0),
-    "exec-shutdown": lambda v: translate_exec_arg(v, indent=0),
+    "exec": _emit_exec_toplevel,
+    "exec-once": _emit_exec_toplevel,
+    "exec-shutdown": _emit_exec_toplevel,
     # ``unbind = MODS, KEY`` (Hyprlang) → ``hl.unbind("MODS + KEY")`` (Lua).
     # Lets callers override an existing Lua bind by emitting an ``unbind``
     # ahead of the replacement, leveraging Hyprland's last-write-wins order.
