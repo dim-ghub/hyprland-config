@@ -95,6 +95,7 @@ class _EmitState:
     groups: list[_Group] = field(default_factory=lambda: [_Group()])
     skipped: list[str] = field(default_factory=list)
     section_stack: list[tuple[str, dict[str, Any] | None]] = field(default_factory=list)
+    emit_migration_markers: bool = True
 
     @property
     def current(self) -> _Group:
@@ -122,7 +123,7 @@ class LuaFile:
     unmapped: list[str]
 
 
-def serialize_lua(doc: Document) -> str:
+def serialize_lua(doc: Document, *, emit_migration_markers: bool = True) -> str:
     """Render *doc* as a single Lua config string.
 
     Walks the document in Hyprland's evaluation order — ``source = …``
@@ -133,17 +134,26 @@ def serialize_lua(doc: Document) -> str:
     banner — consumers brand their output via Comment nodes if they want
     one.
 
+    ``emit_migration_markers`` controls one-shot migration hints — currently
+    the ``-- TODO: was exec-once`` suffix on translated ``exec-once`` shell
+    commands. Defaults to ``True`` so a standalone Hyprlang→Lua conversion
+    surfaces the ambiguity (Lua has no built-in distinction between
+    "fire-at-start" and "fire-at-start-and-every-reload"). Tools that
+    repeatedly re-serialize their own managed config — where the user has
+    already disambiguated intent through a UI — should pass ``False`` to
+    keep saves quiet.
+
     Use :func:`serialize_lua_tree` instead when you want to preserve the
     original ``hyprland.conf.d/*.conf`` split as separate ``.lua`` files
     bridged by ``dofile()`` calls.
     """
-    state = _EmitState()
+    state = _EmitState(emit_migration_markers=emit_migration_markers)
     for owning_doc, line in doc.iter_lines(recursive=True):
         _process_line(line, state, owning_doc)
     return _assemble_lua(state)
 
 
-def serialize_lua_tree(doc: Document) -> list[LuaFile]:
+def serialize_lua_tree(doc: Document, *, emit_migration_markers: bool = True) -> list[LuaFile]:
     """Emit one Lua file per parsed sub-document, mirroring source structure.
 
     Returns one :class:`LuaFile` per document reached via ``source = …``;
@@ -161,19 +171,21 @@ def serialize_lua_tree(doc: Document) -> list[LuaFile]:
     parent assignment that comes *after* a ``source`` directive overriding
     the same key in the child, prefer :func:`serialize_lua` so the merge
     happens across the whole tree in evaluation order.
+
+    See :func:`serialize_lua` for the meaning of ``emit_migration_markers``.
     """
     output: list[LuaFile] = []
-    _emit_doc_tree(doc, output)
+    _emit_doc_tree(doc, output, emit_migration_markers=emit_migration_markers)
     return output
 
 
-def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
+def _emit_doc_tree(doc: Document, output: list[LuaFile], *, emit_migration_markers: bool) -> None:
     """Recursively render *doc* and its sourced children into *output*."""
-    state = _EmitState()
+    state = _EmitState(emit_migration_markers=emit_migration_markers)
     for line in doc.lines:
         if isinstance(line, Source):
             for sub_doc in line.documents:
-                _emit_doc_tree(sub_doc, output)
+                _emit_doc_tree(sub_doc, output, emit_migration_markers=emit_migration_markers)
                 sub_lua_path = _conf_path_to_lua(sub_doc.path)
                 if sub_lua_path is not None:
                     state.current.extras.append(f"dofile({quote_string(str(sub_lua_path))})")
@@ -336,9 +348,11 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
 
     # The exec family writes into dedicated buckets so the assembler can
     # wrap them in ``hl.on("hyprland.start", function() … end)`` blocks
-    # at the end. ``exec-once`` gets an inline marker comment since the
-    # Lua API doesn't carry that semantics — the user gets a visible
-    # reminder that the line will fire on every reload after migration.
+    # at the end. For one-shot migrations ``exec-once`` gets an inline
+    # marker comment since the Lua API doesn't carry that semantics —
+    # the user gets a visible reminder that the line will fire on every
+    # reload after migration. Tools doing repeat round-trip serialization
+    # of their own managed config disable the marker via the state flag.
     if name in ("exec", "exec-once", "exec-shutdown"):
         keyword = parse_hyprctl_keyword(args)
         if keyword is not None:
@@ -346,7 +360,7 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
             # (idempotent on every call), so the inline marker comment
             # is dropped in that branch.
             translated = emit_keyword_config_call(*keyword, indent=1)
-        elif name == "exec-once":
+        elif name == "exec-once" and state.emit_migration_markers:
             translated = f"{emit_exec_cmd_call(args)}  -- TODO: was exec-once"
         else:
             translated = emit_exec_cmd_call(args)

@@ -323,6 +323,15 @@ class TestExecBlocks:
         out = serialize_lua(parse_string("exec-once = dunst\n"))
         assert "TODO: was exec-once" in out
 
+    def test_exec_once_marker_suppressed_when_disabled(self) -> None:
+        # Repeat-serialization callers (e.g. a GUI re-saving its own
+        # managed config on every edit) opt out of the migration hint —
+        # the user already disambiguated intent through the UI.
+        out = serialize_lua(parse_string("exec-once = dunst\n"), emit_migration_markers=False)
+        assert "TODO: was exec-once" not in out
+        # The exec_cmd call itself must still be emitted.
+        assert 'hl.exec_cmd("dunst")' in out
+
     def test_exec_shutdown_separate_block(self) -> None:
         out = serialize_lua(parse_string("exec-shutdown = sync\n"))
         assert 'hl.on("hyprland.shutdown", function()' in out

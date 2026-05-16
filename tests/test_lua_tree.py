@@ -176,3 +176,16 @@ class TestSerializeAny:
     def test_accepts_pathlib_path(self, tmp_path) -> None:
         doc = parse_string("general:gaps_in = 5\n")
         assert serialize_any(doc, tmp_path / "x.lua") == serialize_lua(doc)
+
+    def test_forwards_emit_migration_markers_to_lua(self) -> None:
+        doc = parse_string("exec-once = waybar\n")
+        out = serialize_any(doc, "out.lua", emit_migration_markers=False)
+        assert "TODO: was exec-once" not in out
+
+    def test_migration_markers_ignored_for_hyprlang(self) -> None:
+        # Hyprlang output has no notion of migration markers — passing the
+        # flag is a no-op rather than an error, so callers can plumb the
+        # same value through regardless of target format.
+        doc = parse_string("exec-once = waybar\n")
+        out = serialize_any(doc, "out.conf", emit_migration_markers=False)
+        assert out == serialize_hyprlang(doc)

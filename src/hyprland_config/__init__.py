@@ -178,16 +178,19 @@ def load_any(
     return load(target, follow_sources=follow_sources, lenient=lenient)
 
 
-def serialize_any(doc: Document, path: str | Path) -> str:
+def serialize_any(doc: Document, path: str | Path, *, emit_migration_markers: bool = True) -> str:
     """Render *doc* in the format implied by *path*'s suffix.
 
     Symmetric counterpart to :func:`load_any` — ``.lua`` paths route
     through :func:`serialize_lua`, anything else through
     :func:`serialize_hyprlang`. The path is inspected only for its
     suffix; no I/O is performed.
+
+    ``emit_migration_markers`` is forwarded to :func:`serialize_lua` for
+    Lua targets and ignored otherwise; see that function for details.
     """
     if Path(path).suffix == ".lua":
-        return serialize_lua(doc)
+        return serialize_lua(doc, emit_migration_markers=emit_migration_markers)
     return serialize_hyprlang(doc)
 
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-16
+
+### Added
+
+- `emit_migration_markers` parameter to `serialize_lua()`, `serialize_lua_tree()`, and `serialize_any()` to control whether `exec-once` migration hints appear in Lua output; tools doing repeat round-trip serialization of managed configs can pass `False` to suppress hints for non-interactive saves
+
 ## [0.6.0] - 2026-05-16
 
 ### Added
@@ -169,6 +175,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.6.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.1
 [0.6.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.0
 [0.5.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.5.0
 [0.4.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.4.5
