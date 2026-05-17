@@ -88,8 +88,8 @@ ANIMATION_TREE = (
 )
 
 
-_TreeNode = tuple[str, tuple[str, ...], tuple["_TreeNode", ...]]
-_FlatEntry = tuple[str, str | None, int, tuple[str, ...]]
+type _TreeNode = tuple[str, tuple[str, ...], tuple[_TreeNode, ...]]
+type _FlatEntry = tuple[str, str | None, int, tuple[str, ...]]
 
 
 def _flatten_tree(

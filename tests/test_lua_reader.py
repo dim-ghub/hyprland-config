@@ -273,6 +273,24 @@ class TestBindCalls:
         )
         assert _keywords(load_lua(path), "bind") == ["SUPER, 2, movetoworkspacesilent, 2"]
 
+    def test_bind_movewindow_pixel_absolute(self, tmp_path: Path) -> None:
+        # Lua's ``{x, y}`` is absolute by default; Hyprlang spells that as
+        # the ``exact`` prefix.
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + Q', hl.dsp.window.move({ x = 100, y = 200 }))",
+        )
+        assert _keywords(load_lua(path), "bind") == ["SUPER, Q, movewindowpixel, exact 100 200"]
+
+    def test_bind_movewindow_pixel_relative(self, tmp_path: Path) -> None:
+        # ``relative = true`` switches to a pixel delta; Hyprlang's bare
+        # ``X Y`` form (without ``exact``) is the relative case.
+        path = _write_lua(
+            tmp_path,
+            "hl.bind('SUPER + Q', hl.dsp.window.move({ x = 10, y = -5, relative = true }))",
+        )
+        assert _keywords(load_lua(path), "bind") == ["SUPER, Q, movewindowpixel, 10 -5"]
+
     def test_bind_togglefloating(self, tmp_path: Path) -> None:
         path = _write_lua(
             tmp_path,

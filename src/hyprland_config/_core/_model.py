@@ -409,18 +409,18 @@ class Document:
         Updates the last occurrence wherever it lives.
         If the key doesn't exist anywhere, inserts into this document.
         """
-        value = value_to_conf(value)
+        value_str = value_to_conf(value)
 
         result = self._find_last(lambda ln: _key_matches(ln, key, str.__eq__), recursive)
 
         if result is not None:
             target_doc, target_line = result
             kv_line = cast(KeyValueLine, target_line)
-            kv_line.value = value
+            kv_line.value = value_str
             kv_line.update_raw()
             target_doc.mark_dirty()
         else:
-            self.insert_assignment(key, value)
+            self.insert_assignment(key, value_str)
             self.mark_dirty()
 
     def remove(self, key: str, *, recursive: bool | None = None) -> None:

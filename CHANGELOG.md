@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-05-17
+
+### Added
+
+- `hyprland_version` parameter to `check_deprecated` skips rules whose `version_deprecated` is newer than the running Hyprland, so callers only see deprecations that have actually taken effect. Pair with `migrate(..., to_version=hyprland_version)` for the same gate on the rewrite side.
+
+### Fixed
+
+- `movewindowpixel` / `resizewindowpixel` / `resizeactive` translation between Hyprlang and Lua: previously emitted a non-existent `exact = true` field and silently flipped the relative/absolute default. Both directions now use the `relative` boolean correctly, and the Lua reader translates `hl.dsp.window.move({x, y})` back to `movewindowpixel` instead of an invalid `window.move` literal.
+
 ## [0.6.2] - 2026-05-17
 
 ### Fixed
@@ -186,6 +196,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.6.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.3
 [0.6.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.2
 [0.6.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.1
 [0.6.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.0

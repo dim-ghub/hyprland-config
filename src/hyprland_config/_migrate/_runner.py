@@ -13,6 +13,7 @@ to derive matching warning rules.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cache, cached_property
 from typing import Literal
 
 from hyprland_config._core._model import Document, KeyValueLine
@@ -41,10 +42,9 @@ class _Migration:
     to_version: str
     transform: Callable[[Document], bool]
 
-    _from_ver: tuple[int, ...] = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self._from_ver = parse_version(self.from_version)
+    @cached_property
+    def from_ver(self) -> tuple[int, ...]:
+        return parse_version(self.from_version)
 
 
 def _transform_lines(
@@ -181,15 +181,14 @@ def _make_move_migration(old_full_key: str, new_full_key: str) -> Callable[[Docu
     return migration
 
 
-def _build_migrations() -> list[_Migration]:
-    """Construct the sorted migrations list.
+@cache
+def _migrations() -> list[_Migration]:
+    """Return the sorted migrations list, built once on first call.
 
-    Wrapped in a function so the windowrule transforms can be imported
-    lazily — :mod:`._windowrule` imports :func:`_transform_lines` from
-    this module, and a module-level import the other way would deadlock.
+    The body imports :mod:`._windowrule` locally because that module
+    imports :func:`_transform_lines` from here — a top-level import the
+    other way would deadlock.
     """
-    # Local import breaks the circular dep with _windowrule (which
-    # depends on _transform_lines defined above).
     from hyprland_config._migrate._windowrule import (
         migrate_windowrule_v1_to_v2,
         migrate_windowrule_v2_to_v3,
@@ -258,18 +257,8 @@ def _build_migrations() -> list[_Migration]:
                 _make_delete_migration("decoration:shadow:ignore_window"),
             ),
         ],
-        key=lambda m: m._from_ver,
+        key=lambda m: m.from_ver,
     )
-
-
-_MIGRATIONS: list[_Migration] | None = None
-
-
-def _migrations() -> list[_Migration]:
-    global _MIGRATIONS
-    if _MIGRATIONS is None:
-        _MIGRATIONS = _build_migrations()
-    return _MIGRATIONS
 
 
 def migrate(
@@ -309,9 +298,9 @@ def migrate(
     to_ver = parse_version(to_version) if to_version is not None else None
 
     for m in _migrations():
-        if from_ver is not None and m._from_ver < from_ver:
+        if from_ver is not None and m.from_ver < from_ver:
             continue
-        if to_ver is not None and m._from_ver >= to_ver:
+        if to_ver is not None and m.from_ver >= to_ver:
             continue
         applied = False
         for target_doc in doc.target_documents(recursive):

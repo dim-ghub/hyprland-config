@@ -9,9 +9,9 @@ import re
 from dataclasses import dataclass
 from typing import Self
 
-_RGBA_RE = re.compile(r"^rgba\(([0-9a-fA-F]{8})\)$")
-_RGB_RE = re.compile(r"^rgb\(([0-9a-fA-F]{6})\)$")
-_HEX_ARGB_RE = re.compile(r"^(?:0x)?([0-9a-fA-F]{8})$")
+_RGBA_RE = re.compile(r"rgba\(([0-9a-f]{8})\)$", re.IGNORECASE)
+_RGB_RE = re.compile(r"rgb\(([0-9a-f]{6})\)$", re.IGNORECASE)
+_HEX_ARGB_RE = re.compile(r"(?:0x)?([0-9a-f]{8})$", re.IGNORECASE)
 _ANGLE_RE = re.compile(r"(\d+)deg$")
 
 

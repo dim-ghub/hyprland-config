@@ -6,7 +6,8 @@ these as warnings; the actual transforms that fix them live in
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import cached_property
 
 from hyprland_config._core._model import Document, KeyValueLine, Line
 from hyprland_config._core._types import parse_version
@@ -45,13 +46,13 @@ class _DeprecationRule:
     version_removed: str = ""
     suggestion: str = ""
 
-    # Precomputed for fast comparison in hot loop
-    _deprecated_ver: tuple[int, ...] = field(init=False, repr=False)
-    _value_re: re.Pattern[str] | None = field(init=False, repr=False)
+    @cached_property
+    def deprecated_ver(self) -> tuple[int, ...]:
+        return parse_version(self.version_deprecated)
 
-    def __post_init__(self) -> None:
-        self._deprecated_ver = parse_version(self.version_deprecated)
-        self._value_re = re.compile(self.value_pattern) if self.value_pattern else None
+    @cached_property
+    def value_re(self) -> re.Pattern[str] | None:
+        return re.compile(self.value_pattern) if self.value_pattern else None
 
 
 _RULES: list[_DeprecationRule] = [
@@ -186,6 +187,7 @@ def check_deprecated(
     doc: Document,
     *,
     min_version: str | None = None,
+    hyprland_version: str | None = None,
     recursive: bool | None = None,
 ) -> list[ConfigDeprecation]:
     """Check a document for deprecated config patterns.
@@ -200,16 +202,25 @@ def check_deprecated(
     min_version:
         Only report deprecations from this version onward.  For example,
         ``min_version="0.48"`` will skip rules deprecated before v0.48.
+    hyprland_version:
+        The Hyprland version the user is running.  Rules whose
+        ``version_deprecated`` is newer than this are skipped — those
+        deprecations haven't taken effect yet for that user.  For example,
+        on Hyprland 0.49 the v0.53 ``windowrulev2`` rename is not yet a
+        deprecation, so it should not be reported.
     recursive:
         Whether to check sourced sub-documents.  Defaults to the
         document's ``sources_followed`` flag.
     """
     warnings: list[ConfigDeprecation] = []
     min_ver = parse_version(min_version) if min_version is not None else None
+    hypr_ver = parse_version(hyprland_version) if hyprland_version is not None else None
 
     for _owner_doc, line in doc.iter_lines(recursive):
         for rule in _RULES:
-            if min_ver is not None and rule._deprecated_ver < min_ver:
+            if min_ver is not None and rule.deprecated_ver < min_ver:
+                continue
+            if hypr_ver is not None and rule.deprecated_ver > hypr_ver:
                 continue
             if _rule_matches(rule, line):
                 warnings.append(
@@ -238,8 +249,8 @@ def _rule_matches(rule: _DeprecationRule, line: Line) -> bool:
     if rule.key and isinstance(line, KeyValueLine):
         if line.full_key != rule.key and line.key != rule.key:
             return False
-        if rule._value_re is not None:
-            return bool(rule._value_re.search(line.value))
+        if rule.value_re is not None:
+            return bool(rule.value_re.search(line.value))
         return True
 
     return False

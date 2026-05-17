@@ -42,6 +42,7 @@ from hyprland_config._core._model import (
     Comment,
     Document,
     Keyword,
+    Line,
     SectionClose,
     SectionOpen,
     Source,
@@ -88,8 +89,8 @@ class _EmitState:
 
     ``groups`` always holds at least one group — the leading unnamed group
     that collects content before any comment is seen. ``skipped`` is global
-    rather than per-group because the trailing TODO block is one
-    manual-conversion list for the whole file, not per topical section.
+    rather than per-group because the trailing manual-conversion block is
+    one list for the whole file, not per topical section.
     """
 
     groups: list[_Group] = field(default_factory=lambda: [_Group()])
@@ -232,8 +233,8 @@ def _assemble_lua(state: _EmitState) -> str:
     """Render an accumulated :class:`_EmitState` to a Lua source string.
 
     Each group becomes one section (header line plus its bucket contents);
-    sections are joined with a blank line between them. The trailing TODO
-    block, when present, sits after every group.
+    sections are joined with a blank line between them. The trailing
+    manual-conversion block, when present, sits after every group.
     """
     sections: list[str] = []
     for group in state.groups:
@@ -281,7 +282,7 @@ def _render_group(group: _Group) -> str | None:
 _BLOCK_RULE_SECTIONS = frozenset({"windowrule", "windowrulev2", "layerrule"})
 
 
-def _process_line(line: Any, state: _EmitState, owning_doc: Document) -> None:
+def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
     """Route a single line to the right accumulator on *state*.
 
     *owning_doc* is the Document that originally contained *line* (the parent

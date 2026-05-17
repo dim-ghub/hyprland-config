@@ -153,49 +153,51 @@ def _dispatch_fullscreenstate(arg: str) -> str | None:
     return f"hl.dsp.window.fullscreen_state({{ {', '.join(parts)} }})"
 
 
-def _dispatch_movewindowpixel(arg: str) -> str | None:
-    """``movewindowpixel exact X Y[,address:0x…]`` → ``hl.dsp.window.move({…})``.
+def _dispatch_pixel_move_or_resize(call: str, arg: str) -> str | None:
+    """Shared body for ``movewindowpixel`` / ``resizewindowpixel`` translation.
 
-    The Lua API takes ``{ x, y, exact = true }`` for absolute-pixel moves;
-    direction-based moves use ``{ direction = … }`` instead. Verified
-    against Hyprland 0.55.
+    Hyprlang defaults the bare ``X Y`` form to relative; the literal ``exact``
+    prefix switches to absolute. The Lua API has the opposite default —
+    ``{x, y}`` is absolute (``relative = false`` per Hyprland's
+    ``LuaBindingsDispatchers.cpp``) and ``relative = true`` switches to
+    relative. We translate both directions explicitly so the round-trip
+    survives.
     """
     rest, selector = _extract_address_selector(arg)
     tokens = rest.split()
-    if len(tokens) != 3 or tokens[0].lower() != "exact":
+    exact = False
+    if tokens and tokens[0].lower() == "exact":
+        exact = True
+        tokens = tokens[1:]
+    if len(tokens) != 2:
         return None
     try:
-        x = int(tokens[1])
-        y = int(tokens[2])
+        x = int(tokens[0])
+        y = int(tokens[1])
     except ValueError:
         return None
-    parts = [f"x = {x}", f"y = {y}", "exact = true"]
+    parts = [f"x = {x}", f"y = {y}"]
+    if not exact:
+        parts.append("relative = true")
     if selector:
         parts.append(f"window = {quote_string(selector)}")
-    return f"hl.dsp.window.move({{ {', '.join(parts)} }})"
+    return f"{call}({{ {', '.join(parts)} }})"
+
+
+def _dispatch_movewindowpixel(arg: str) -> str | None:
+    """``movewindowpixel [exact] X Y[,address:0x…]`` → ``hl.dsp.window.move({…})``."""
+    return _dispatch_pixel_move_or_resize("hl.dsp.window.move", arg)
 
 
 def _dispatch_resizewindowpixel(arg: str) -> str | None:
-    """``resizewindowpixel exact W H[,address:0x…]`` → ``hl.dsp.window.resize({…})``.
+    """``resizewindowpixel [exact] W H[,address:0x…]`` → ``hl.dsp.window.resize({…})``.
 
     The Lua API spells the resize dimensions as ``x``/``y`` (not
     ``width``/``height``) — confirmed against Hyprland 0.55, which
     explicitly rejects the ``width``/``height`` shape with
     "'x' and 'y' are required".
     """
-    rest, selector = _extract_address_selector(arg)
-    tokens = rest.split()
-    if len(tokens) != 3 or tokens[0].lower() != "exact":
-        return None
-    try:
-        w = int(tokens[1])
-        h = int(tokens[2])
-    except ValueError:
-        return None
-    parts = [f"x = {w}", f"y = {h}", "exact = true"]
-    if selector:
-        parts.append(f"window = {quote_string(selector)}")
-    return f"hl.dsp.window.resize({{ {', '.join(parts)} }})"
+    return _dispatch_pixel_move_or_resize("hl.dsp.window.resize", arg)
 
 
 def _dispatch_resizewindow(arg: str, *, mouse: bool = False) -> str | None:
@@ -300,8 +302,11 @@ def _dispatch_changegroupactive(arg: str) -> str | None:
 def _dispatch_resizeactive(arg: str) -> str | None:
     """``resizeactive, [exact] X Y`` → ``hl.dsp.window.resize({ x, y, relative? })``.
 
-    Default form is relative (``resizeactive, 50 0``). The literal ``exact``
-    prefix switches to absolute pixel sizing (``resizeactive, exact 800 600``).
+    Hyprlang defaults to relative resize (``resizeactive, 50 0``); the
+    literal ``exact`` prefix switches to absolute. The Lua API has the
+    opposite default — absent ``relative`` means absolute, ``relative =
+    true`` means relative — so the field is emitted only for the relative
+    case.
     """
     tokens = arg.strip().split()
     relative = True
@@ -312,7 +317,7 @@ def _dispatch_resizeactive(arg: str) -> str | None:
         return None
     x = coerce_value(tokens[0])
     y = coerce_value(tokens[1])
-    relative_field = "" if relative else ", relative = false"
+    relative_field = ", relative = true" if relative else ""
     return (
         f"hl.dsp.window.resize({{ x = {format_value(x, 0)}, "
         f"y = {format_value(y, 0)}{relative_field} }})"

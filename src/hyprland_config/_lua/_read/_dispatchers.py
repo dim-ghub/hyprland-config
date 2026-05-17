@@ -147,15 +147,18 @@ def _window_move(arg: Any) -> tuple[str, str]:
         return ("moveintogroup", _DIRECTION_TO_HYPRLANG.get(direction, str(direction)))
     if "out_of_group" in arg:
         return ("moveoutofgroup", "")
-    # ``hl.dsp.window.move({x, y, exact = true})`` → ``movewindowpixel exact X Y``;
-    # the relative-pixel form has no documented Hyprlang spelling (the forward
-    # emitter doesn't produce it), so any ``{x, y}`` without ``exact`` is
-    # surfaced as the literal Lua name and lets the caller decide.
+    # ``hl.dsp.window.move({x, y})`` is absolute (the Lua API default
+    # per Hyprland's ``LuaBindingsDispatchers.cpp``); ``relative = true``
+    # switches to a relative pixel delta. Hyprlang's ``movewindowpixel``
+    # has the opposite default — bare ``X Y`` is relative, ``exact X Y``
+    # is absolute — so we translate both directions explicitly.
     if "x" in arg and "y" in arg:
         coords = f"{scalar_to_hyprlang(arg['x'])} {scalar_to_hyprlang(arg['y'])}"
-        if arg.get("relative") is False:
-            return ("movewindowpixel", f"exact {coords}")
-        return ("window.move", coords)
+        body = coords if arg.get("relative") is True else f"exact {coords}"
+        window = arg.get("window")
+        if window:
+            return ("movewindowpixel", f"{body},{window}")
+        return ("movewindowpixel", body)
     return ("movewindow", "")
 
 

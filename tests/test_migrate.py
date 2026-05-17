@@ -55,6 +55,37 @@ class TestCheckDeprecated:
         warnings = check_deprecated(doc, min_version="0.40")
         assert not any("exec_once" in w.key for w in warnings)
 
+    def test_hyprland_version_filters_newer_rules(self):
+        """Rules deprecated above the running Hyprland version are skipped."""
+        # windowrulev2 deprecated in 0.53; user on 0.49 sees no such warning.
+        doc = parse_string("windowrulev2 = float, class:^(firefox)$\n")
+        warnings = check_deprecated(doc, hyprland_version="0.49")
+        assert not any(w.key == "windowrulev2" for w in warnings)
+        # dwindle:pseudotile deprecated in 0.55; user on 0.49 sees no such warning.
+        doc = parse_string("dwindle {\n    pseudotile = 1\n}\n")
+        warnings = check_deprecated(doc, hyprland_version="0.49")
+        assert not any(w.key == "dwindle:pseudotile" for w in warnings)
+
+    def test_hyprland_version_boundary_is_inclusive(self):
+        """A rule deprecated *at* the running version is still reported."""
+        # pseudotile deprecated in 0.55; user on 0.55 should see it.
+        doc = parse_string("dwindle {\n    pseudotile = 1\n}\n")
+        warnings = check_deprecated(doc, hyprland_version="0.55")
+        assert any(w.key == "dwindle:pseudotile" for w in warnings)
+
+    def test_hyprland_version_still_flags_older_deprecations(self):
+        """Pre-existing deprecations remain visible at higher Hyprland versions."""
+        # windowrule v1 deprecated in 0.48; visible to a 0.49 user.
+        doc = parse_string("windowrule = float,Firefox\n")
+        warnings = check_deprecated(doc, hyprland_version="0.49")
+        assert any("windowrule" in w.key and "deprecated" in w.message for w in warnings)
+
+    def test_hyprland_version_with_patch_suffix(self):
+        """``0.49.0`` parses and compares equivalently to ``0.49``."""
+        doc = parse_string("windowrulev2 = float, class:^(firefox)$\n")
+        warnings = check_deprecated(doc, hyprland_version="0.49.0")
+        assert not any(w.key == "windowrulev2" for w in warnings)
+
     def test_no_false_positives_on_clean_config(self):
         doc = parse_string(
             "$mainMod = SUPER\n"

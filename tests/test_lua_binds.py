@@ -149,12 +149,12 @@ class TestExtraDispatchers:
 
     def test_resizeactive_relative(self) -> None:
         out = serialize_lua(parse_string("bind = SUPER, l, resizeactive, 50 0\n"))
-        assert "hl.dsp.window.resize({ x = 50, y = 0 })" in out
+        assert "hl.dsp.window.resize({ x = 50, y = 0, relative = true })" in out
 
     def test_resizeactive_exact(self) -> None:
         out = serialize_lua(parse_string("bind = SUPER, l, resizeactive, exact 800 600\n"))
-        assert "x = 800" in out
-        assert "relative = false" in out
+        assert "hl.dsp.window.resize({ x = 800, y = 600 })" in out
+        assert "relative" not in out
 
     def test_setprop_two_arg(self) -> None:
         out = serialize_lua(parse_string("bind = SUPER, p, setprop, opaque toggle\n"))
@@ -202,7 +202,7 @@ class TestBindd:
         )
         assert "repeating = true" in out
         assert 'description = "resize left"' in out
-        assert "hl.dsp.window.resize({ x = -50, y = 0 })" in out
+        assert "hl.dsp.window.resize({ x = -50, y = 0, relative = true })" in out
 
     def test_bindmd_combines_mouse_and_description(self) -> None:
         out = serialize_lua(parse_string("bindmd = SUPER, mouse:272, move window, movewindow\n"))
@@ -468,9 +468,12 @@ class TestDispatchToLua:
     def test_movewindowpixel_with_address(self) -> None:
         out = dispatch_to_lua("movewindowpixel", "exact 100 200,address:0xabc")
         assert out == (
-            "hl.dispatch(hl.dsp.window.move({ x = 100, y = 200, exact = true, "
-            'window = "address:0xabc" }))'
+            'hl.dispatch(hl.dsp.window.move({ x = 100, y = 200, window = "address:0xabc" }))'
         )
+
+    def test_movewindowpixel_relative(self) -> None:
+        out = dispatch_to_lua("movewindowpixel", "10 -20")
+        assert out == "hl.dispatch(hl.dsp.window.move({ x = 10, y = -20, relative = true }))"
 
     def test_address_targeted_unsupported_raises(self) -> None:
         """Dispatchers not in the address-aware allowlist must reject an

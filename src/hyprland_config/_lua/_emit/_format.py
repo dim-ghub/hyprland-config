@@ -124,14 +124,11 @@ def coerce_value(s: str) -> Any:
 def _try_gradient(value: str) -> dict[str, Any] | None:
     """Recognise a multi-colour gradient value and convert to a structured dict.
 
-    Single-colour values (``rgba(595959aa)``) deliberately return ``None`` —
-    keeping them as strings matches what the upstream Lua example does, and
-    avoids over-converting borders that don't gradient anyway.
+    Single-colour values without an angle (``rgba(595959aa)``) deliberately
+    return ``None`` — keeping them as strings matches what the upstream Lua
+    example does, and avoids over-converting borders that don't gradient
+    anyway.
     """
-    if value.count("rgba(") + value.count("rgb(") < 2 and not value.lower().rstrip().endswith(
-        "deg"
-    ):
-        return None
     try:
         g = Gradient.parse(value)
     except ValueError:
