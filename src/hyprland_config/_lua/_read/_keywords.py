@@ -11,6 +11,7 @@ from typing import Any
 
 from hyprland_config._core._model import Assignment, Document, SectionClose, SectionOpen
 from hyprland_config._lua._read._config import format_number, scalar_to_hyprlang
+from hyprland_config._lua._workspace_fields import lua_field_to_hyprlang
 
 
 def monitor_value(t: dict[str, Any]) -> str:
@@ -102,13 +103,21 @@ def _render_rule_action(name: str, value: Any) -> str | None:
 
 
 def workspace_value(t: dict[str, Any]) -> str:
-    """``hl.workspace_rule({workspace, monitor, default, ...})`` → Hyprlang CSV."""
+    """``hl.workspace_rule({workspace, monitor, default, ...})`` → Hyprlang CSV.
+
+    Field names and a handful of boolean senses differ between the two
+    forms (Lua ``no_border = true`` ↔ Hyprlang ``border:false``);
+    :func:`lua_field_to_hyprlang` carries the catalogue. Unknown keys
+    pass through unchanged so plugin / future-Hyprland fields survive
+    the round-trip.
+    """
     ws = t.get("workspace", "")
     parts = [scalar_to_hyprlang(ws)]
     for key in sorted(t):
         if key == "workspace":
             continue
-        parts.append(f"{key}:{scalar_to_hyprlang(t[key])}")
+        name, value = lua_field_to_hyprlang(key, t[key])
+        parts.append(f"{name}:{value}")
     return ", ".join(parts)
 
 

@@ -10,6 +10,7 @@ from typing import Any
 
 from hyprland_config._core._split import split_top_level
 from hyprland_config._lua._emit._format import coerce_value, format_table, split_csv
+from hyprland_config._lua._workspace_fields import hyprlang_field_to_lua
 
 
 def coerce_rule_value(value: str) -> Any:
@@ -184,7 +185,15 @@ def emit_workspace_rule(args: str) -> str:
     """``workspace = ID, monitor:DP-1, default:true, ...`` → ``hl.workspace_rule({...})``.
 
     The first token identifies the workspace selector; the rest are
-    ``key:value`` rule fields (monitor, default, persistent, gaps_in, etc.).
+    ``key:value`` rule fields (``monitor``, ``default``, ``persistent``,
+    ``gapsin``, …).
+
+    Field names and three boolean senses differ between the forms (e.g.
+    Hyprlang ``border:false`` ↔ Lua ``no_border = true``);
+    :func:`hyprlang_field_to_lua` carries the catalogue. Multi-value
+    gaps (``gapsout:5 10 5 10``) become 4-key Lua tables. Unknown
+    fields pass through unchanged so plugin / future-Hyprland properties
+    don't get silently dropped.
     """
     parts = split_csv(args)
     if not parts:
@@ -194,5 +203,6 @@ def emit_workspace_rule(args: str) -> str:
         key, sep, value = token.partition(":")
         if not sep:
             continue
-        table[key.strip()] = coerce_value(value.strip())
+        lua_name, lua_value = hyprlang_field_to_lua(key.strip(), value.strip())
+        table[lua_name] = lua_value
     return f"hl.workspace_rule({format_table(table, indent=0)})"

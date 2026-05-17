@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-05-17
+
+### Fixed
+
+- Workspace rule field translation between Hyprlang and Lua: field name renames (`gapsin` ↔ `gaps_in`, `bordersize` ↔ `border_size`, `defaultName` ↔ `default_name`, `on-created-empty` ↔ `on_created_empty`), inverted boolean sense for `border`/`rounding`/`shadow` (Hyprlang `border:false` ↔ Lua `no_border = true`), and CSS-shorthand gap expansion (`gapsout:5 10` ↔ `{top=5, right=10, bottom=5, left=10}`). Unknown fields pass through unchanged.
+- `check_deprecated` no longer flags Hyprland 0.53+ v3 `windowrule` lines (those with a `match:` token) as deprecated v1
+
+### Removed
+
+- `input:numlock_by_default` → `input:kb_numlock` rename migration and its `check_deprecated` warning https://github.com/BlueManCZ/hyprmod/issues/34
+
 ## [0.6.1] - 2026-05-16
 
 ### Added
@@ -175,6 +186,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.6.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.2
 [0.6.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.1
 [0.6.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.0
 [0.5.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.5.0

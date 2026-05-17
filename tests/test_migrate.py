@@ -16,6 +16,18 @@ class TestCheckDeprecated:
         warnings = check_deprecated(doc)
         assert any("windowrule" in w.key and "deprecated" in w.message for w in warnings)
 
+    def test_does_not_flag_windowrule_v3(self):
+        """v3 lines reuse the ``windowrule`` keyword but carry ``match:`` tokens."""
+        doc = parse_string("windowrule = stay_focused on, match:title ^Albert$\n")
+        warnings = check_deprecated(doc)
+        assert not any("windowrule" in w.key for w in warnings)
+
+    def test_does_not_flag_windowrule_v3_multi_matchers(self):
+        """v3 lines can chain multiple ``match:`` tokens."""
+        doc = parse_string("windowrule = float on, match:class firefox, match:title settings\n")
+        warnings = check_deprecated(doc)
+        assert not any("windowrule" in w.key for w in warnings)
+
     def test_detects_blur_options(self):
         doc = parse_string("decoration {\n    blur_size = 3\n    blur_passes = 1\n}\n")
         warnings = check_deprecated(doc)
@@ -26,11 +38,6 @@ class TestCheckDeprecated:
         doc = parse_string("exec_once = waybar\n")
         warnings = check_deprecated(doc)
         assert any("exec_once" in w.key for w in warnings)
-
-    def test_detects_numlock_by_default(self):
-        doc = parse_string("input {\n    numlock_by_default = true\n}\n")
-        warnings = check_deprecated(doc)
-        assert any("numlock" in w.key for w in warnings)
 
     def test_detects_general_max_fps(self):
         doc = parse_string("general {\n    max_fps = 60\n}\n")
@@ -133,13 +140,6 @@ class TestMigrate:
         assert kv[0].full_key == "cursor:no_warps"
         assert kv[0].key == "no_warps"
         assert "no_warps = true" in serialize_hyprlang(doc)
-
-    def test_migrate_numlock(self):
-        doc = parse_string("input {\n    numlock_by_default = true\n}\n")
-        result = migrate(doc)
-        assert result.changes_made
-        kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
-        assert kv[0].full_key == "input:kb_numlock"
 
     def test_migrate_windowrule_v1_chains_to_v3(self):
         # v1 (``windowrule = float,Firefox``) → v2 → v3 in one
@@ -344,11 +344,6 @@ class TestMigratePreservesLineShape:
         kv = [ln for ln in doc.lines if isinstance(ln, KeyValueLine)]
         assert kv[0].key == "cursor:no_warps"
         assert kv[0].full_key == "cursor:no_warps"
-
-    def test_flat_numlock_stays_flat(self):
-        doc = parse_string("input:numlock_by_default = true\n")
-        migrate(doc)
-        assert serialize_hyprlang(doc) == "input:kb_numlock = true\n"
 
     def test_flat_sensitivity_stays_flat(self):
         doc = parse_string("general:sensitivity = 1.0\n")

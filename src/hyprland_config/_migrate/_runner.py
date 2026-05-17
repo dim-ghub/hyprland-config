@@ -216,12 +216,6 @@ def _build_migrations() -> list[_Migration]:
                 _make_rename_migration("cursor:no_cursor_warps", "cursor:no_warps"),
             ),
             _Migration(
-                "Rename numlock_by_default → kb_numlock",
-                "0.44",
-                "0.45",
-                _make_rename_migration("input:numlock_by_default", "input:kb_numlock"),
-            ),
-            _Migration(
                 "Move sensitivity from general to input",
                 "0.39",
                 "0.40",

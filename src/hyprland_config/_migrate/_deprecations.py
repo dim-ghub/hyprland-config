@@ -8,7 +8,7 @@ these as warnings; the actual transforms that fix them live in
 import re
 from dataclasses import dataclass, field
 
-from hyprland_config._core._model import Comment, Document, KeyValueLine, Line
+from hyprland_config._core._model import Document, KeyValueLine, Line
 from hyprland_config._core._types import parse_version
 from hyprland_config._migrate._runner import BLUR_OPTIONS
 
@@ -36,9 +36,7 @@ class ConfigDeprecation:
 class _DeprecationRule:
     """Internal rule definition for matching deprecated config patterns."""
 
-    # What to match — either a key pattern or a callable check
     key: str = ""
-    line_pattern: str = ""  # regex pattern for raw line matching (e.g. comment syntax)
     value_pattern: str = ""  # regex pattern for value matching
 
     # Metadata
@@ -49,24 +47,14 @@ class _DeprecationRule:
 
     # Precomputed for fast comparison in hot loop
     _deprecated_ver: tuple[int, ...] = field(init=False, repr=False)
-    _line_re: re.Pattern[str] | None = field(init=False, repr=False)
     _value_re: re.Pattern[str] | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._deprecated_ver = parse_version(self.version_deprecated)
-        self._line_re = re.compile(self.line_pattern) if self.line_pattern else None
         self._value_re = re.compile(self.value_pattern) if self.value_pattern else None
 
 
 _RULES: list[_DeprecationRule] = [
-    # v0.37: old comment syntax "#!" removed
-    _DeprecationRule(
-        line_pattern=r"^#!.*",
-        message="The #! comment syntax was removed",
-        version_deprecated="0.36",
-        version_removed="0.37",
-        suggestion="Use plain # comments instead",
-    ),
     # v0.41: "no_cursor_warps" renamed to "no_warps"
     _DeprecationRule(
         key="cursor:no_cursor_warps",
@@ -89,12 +77,19 @@ _RULES: list[_DeprecationRule] = [
         version_deprecated="0.33",
         suggestion="Use exec-once instead",
     ),
-    # v0.48: windowrule (v1) deprecated in favour of windowrulev2
+    # v0.48: windowrule (v1) deprecated in favour of windowrulev2.
+    # Hyprland 0.53+ reused the ``windowrule`` keyword for the v3 syntax
+    # (``windowrule = match:KEY VALUE, EFFECT VALUE``), so the keyword
+    # alone isn't enough to spot v1 lines. v3 always carries a ``match:``
+    # token; the negative-lookahead pattern matches lines that *lack*
+    # one, which is the same v1-vs-v3 signal :func:`migrate_windowrule_v1_to_v2`
+    # uses to decide whether to rewrite.
     _DeprecationRule(
         key="windowrule",
+        value_pattern=r"^(?!.*match:).+",
         message="windowrule (v1) is deprecated",
         version_deprecated="0.48",
-        suggestion="Use windowrulev2 with explicit matching: windowrulev2 = <rule>, <match>",
+        suggestion="Use windowrule v3 syntax: windowrule = <rule>, match:<KEY> <VALUE>",
     ),
     # v0.53: windowrulev2 renamed to windowrule (v3 syntax)
     _DeprecationRule(
@@ -134,13 +129,6 @@ _RULES: list[_DeprecationRule] = [
         message="sensitivity moved to input section",
         version_deprecated="0.40",
         suggestion="Use input:sensitivity instead",
-    ),
-    # v0.45: deprecated input options
-    _DeprecationRule(
-        key="input:numlock_by_default",
-        message="numlock_by_default was renamed",
-        version_deprecated="0.45",
-        suggestion="Use input:kb_numlock instead",
     ),
     # v0.46: deprecated misc options
     _DeprecationRule(
@@ -247,17 +235,9 @@ def _line_key(line: Line) -> str:
 
 def _rule_matches(rule: _DeprecationRule, line: Line) -> bool:
     """Check if a deprecation rule matches a line."""
-    # Raw line pattern match (for comment-based rules like #!)
-    if rule._line_re is not None:
-        if not isinstance(line, Comment):
-            return False
-        return bool(rule._line_re.match(line.raw.strip()))
-
-    # Exact key match
     if rule.key and isinstance(line, KeyValueLine):
         if line.full_key != rule.key and line.key != rule.key:
             return False
-        # Optional value pattern check
         if rule._value_re is not None:
             return bool(rule._value_re.search(line.value))
         return True
