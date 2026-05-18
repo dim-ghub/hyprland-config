@@ -40,20 +40,24 @@ from typing import Any
 from hyprland_config._core._model import (
     Assignment,
     Comment,
+    Conditional,
     Document,
     Keyword,
     Line,
     SectionClose,
     SectionOpen,
     Source,
+    Variable,
 )
 from hyprland_config._hyprlang._bind import is_bind_keyword
 from hyprland_config._lua._emit._bind import emit_bind
+from hyprland_config._lua._emit._conditional import translate_expression
 from hyprland_config._lua._emit._dispatchers import (
     rewrite_hyprctl_dispatch_in_shell,
     translate_dispatcher,
 )
 from hyprland_config._lua._emit._format import (
+    INDENT,
     coerce_value,
     emit_exec_cmd_call,
     emit_keyword_config_call,
@@ -89,6 +93,41 @@ class _Group:
 
 
 @dataclass
+class _CondBranch:
+    """One branch of a translated conditional block.
+
+    ``lua_expr`` is the Lua source for the branch's condition, or ``None``
+    for an ``else`` branch. ``lines`` buffers the body until the matching
+    ``endif`` fires — at that point the body is re-walked through a fresh
+    sub-state to produce the Lua statements that go inside the branch.
+    ``boundary`` holds the directive line that opened the branch so the
+    untranslatable-fallback path can re-emit the whole block verbatim.
+    """
+
+    lua_expr: str | None
+    boundary: Conditional | None = None
+    lines: list[Line] = field(default_factory=list)
+
+
+@dataclass
+class _CondScope:
+    """A single ``# hyprlang if … endif`` block being collected.
+
+    ``branches`` grows as ``elif``/``else`` arrive; the last entry is the
+    one currently accumulating lines. ``depth`` counts nested ``if`` blocks
+    buffered into the current branch — we only consume a directive at depth
+    zero, so a nested ``endif`` doesn't accidentally close the outer scope.
+    ``untranslatable`` flips when any branch's expression can't be mapped
+    to Lua; the whole block then surfaces verbatim in the manual-conversion
+    list instead of producing wrong Lua.
+    """
+
+    branches: list[_CondBranch] = field(default_factory=list)
+    depth: int = 0
+    untranslatable: bool = False
+
+
+@dataclass
 class _EmitState:
     """Accumulator for everything we've emitted while walking the document.
 
@@ -96,11 +135,21 @@ class _EmitState:
     that collects content before any comment is seen. ``skipped`` is global
     rather than per-group because the trailing manual-conversion block is
     one list for the whole file, not per topical section.
+
+    ``cond_stack`` tracks active ``# hyprlang if`` scopes for buffering
+    until each matching ``endif``. ``referenced_vars`` collects ``$VAR``
+    names that appear in conditional expressions so :func:`_assemble_lua`
+    can emit ``local NAME = "value"`` declarations at the top of the
+    output — the rest of the emitter still inline-expands ``$VAR`` at use
+    sites, so this only surfaces variables that the conditional logic
+    actually needs at Lua runtime.
     """
 
     groups: list[_Group] = field(default_factory=lambda: [_Group()])
     skipped: list[str] = field(default_factory=list)
     section_stack: list[tuple[str, dict[str, Any] | None]] = field(default_factory=list)
+    cond_stack: list[_CondScope] = field(default_factory=list)
+    referenced_vars: dict[str, str] = field(default_factory=dict)
     emit_migration_markers: bool = True
 
     @property
@@ -240,8 +289,17 @@ def _assemble_lua(state: _EmitState) -> str:
     Each group becomes one section (header line plus its bucket contents);
     sections are joined with a blank line between them. The trailing
     manual-conversion block, when present, sits after every group.
+
+    Variables referenced by translated ``# hyprlang if`` expressions get
+    a leading ``local`` preamble so the conditional bodies can read them
+    at Lua load time — every other ``$VAR`` reference is inline-expanded
+    by the per-line emitters, so this preamble only ever lists variables
+    the conditional logic actually needs.
     """
+    _drain_open_conditionals(state)
     sections: list[str] = []
+    if state.referenced_vars:
+        sections.append(_format_var_preamble(state.referenced_vars))
     for group in state.groups:
         rendered = _render_group(group)
         if rendered is not None:
@@ -252,6 +310,37 @@ def _assemble_lua(state: _EmitState) -> str:
         sections.append("".join(todo))
 
     return "\n".join(sections)
+
+
+def _drain_open_conditionals(state: _EmitState) -> None:
+    """Surface any ``# hyprlang if`` block that never reached an ``endif``.
+
+    A well-formed Hyprlang config always closes its conditionals, but lenient
+    parsing can produce documents with a trailing ``if`` and no matching
+    ``endif`` (cut-off pastes, in-progress edits). Without this drain the
+    buffered body lines would silently vanish; the manual-conversion block
+    is the right place for them so the user sees the unfinished block.
+    """
+    while state.cond_stack:
+        scope = state.cond_stack.pop()
+        for branch in scope.branches:
+            if branch.boundary is not None:
+                state.skipped.append(branch.boundary.raw.rstrip("\n").strip())
+            for body_line in branch.lines:
+                state.skipped.append(body_line.raw.rstrip("\n").strip())
+
+
+def _format_var_preamble(variables: dict[str, str]) -> str:
+    """Render ``local NAME = "value"`` lines for variables used in conditionals.
+
+    Values are emitted as Lua strings — Hyprlang treats every variable as
+    a string at storage time, and the conditional translator wraps numeric
+    comparisons in ``tonumber(...)`` so the local stays a string. Insertion
+    order is preserved so the preamble reads in the order the conditionals
+    discovered the references.
+    """
+    lines = [f"local {name} = {quote_string(value)}" for name, value in variables.items()]
+    return "\n".join(lines) + "\n"
 
 
 def _render_group(group: _Group) -> str | None:
@@ -294,6 +383,44 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
     when sources are followed). We use its variable scope to expand
     ``$var`` references in keyword arguments before emitting.
     """
+    # Inside a ``# hyprlang if … endif`` block, buffer lines into the active
+    # branch until the closing directive fires. Nested ``if``/``endif`` pairs
+    # count toward ``scope.depth`` so we only consume the directives that
+    # actually belong to the current scope; the nested ones travel along as
+    # buffered Line nodes and get re-walked through a sub-state when the
+    # outer block renders.
+    if state.cond_stack:
+        scope = state.cond_stack[-1]
+        if isinstance(line, Conditional):
+            if line.kind == "if":
+                scope.depth += 1
+                scope.branches[-1].lines.append(line)
+                return
+            if line.kind == "endif" and scope.depth > 0:
+                scope.depth -= 1
+                scope.branches[-1].lines.append(line)
+                return
+            if line.kind in ("elif", "else") and scope.depth > 0:
+                scope.branches[-1].lines.append(line)
+                return
+            if line.kind == "noerror":
+                scope.branches[-1].lines.append(line)
+                return
+            # Fall through: directive at depth 0, addressed by _handle_conditional.
+        else:
+            scope.branches[-1].lines.append(line)
+            return
+
+    if isinstance(line, Conditional):
+        _handle_conditional(line, state, owning_doc)
+        return
+
+    if isinstance(line, Variable):
+        # No standalone output — referenced variables surface in the local
+        # preamble (see `_assemble_lua`); unreferenced variables stay inline-
+        # expanded at their consumption sites.
+        return
+
     if isinstance(line, Comment):
         # Comments delimit topical groups — open a fresh accumulator so the
         # following lines emit under their own `-- header` and don't merge
@@ -415,3 +542,176 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
         state.skipped.append(f"{name} = {args}")
     else:
         state.current.extras.append(result)
+
+
+# ---------------------------------------------------------------------------
+# Conditional directive handling
+# ---------------------------------------------------------------------------
+
+
+def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Document) -> None:
+    """Route a ``# hyprlang`` directive at the current scope's depth zero.
+
+    ``if`` opens a new scope; ``elif`` / ``else`` start a fresh branch on
+    the current scope; ``endif`` closes the scope and emits the translated
+    block. ``noerror`` has no Lua equivalent and is dropped with an
+    explanatory comment in the output so the user can see what got removed.
+    Orphan ``elif`` / ``else`` / ``endif`` directives (no matching ``if``)
+    land in the manual-conversion block rather than producing broken Lua.
+    """
+    kind = line.kind
+    raw = line.raw.rstrip("\n")
+
+    if kind == "noerror":
+        state.current.extras.append(f"-- noerror has no Lua equivalent (was: {raw.strip()})")
+        return
+
+    if kind == "if":
+        scope = _CondScope()
+        _open_branch(scope, line, owning_doc, state)
+        state.cond_stack.append(scope)
+        return
+
+    if not state.cond_stack:
+        state.skipped.append(raw.strip())
+        return
+
+    scope = state.cond_stack[-1]
+
+    if kind == "elif":
+        _open_branch(scope, line, owning_doc, state)
+        return
+
+    if kind == "else":
+        scope.branches.append(_CondBranch(lua_expr=None, boundary=line))
+        return
+
+    if kind == "endif":
+        state.cond_stack.pop()
+        if scope.untranslatable:
+            # Any branch's expression failed to translate — surface the whole
+            # block verbatim (directives plus bodies) so the user can port it
+            # by hand instead of getting a partially-correct, silently broken
+            # Lua block.
+            for branch in scope.branches:
+                if branch.boundary is not None:
+                    state.skipped.append(branch.boundary.raw.rstrip("\n").strip())
+                for body_line in branch.lines:
+                    state.skipped.append(body_line.raw.rstrip("\n").strip())
+            state.skipped.append(line.raw.rstrip("\n").strip())
+            return
+        rendered = _emit_conditional_block(scope, state, owning_doc)
+        if state.cond_stack:
+            # Outer conditional is still collecting — the rendered block goes
+            # into the outer branch's buffer as a pre-rendered Line; the
+            # sub-walker recognizes ``_RawLua`` and emits the text as-is when
+            # the outer block renders.
+            outer = state.cond_stack[-1]
+            outer.branches[-1].lines.append(_RawLua(raw=rendered))
+        else:
+            state.current.extras.append(rendered)
+        return
+
+
+def _open_branch(
+    scope: _CondScope, directive: Conditional, owning_doc: Document, state: _EmitState
+) -> None:
+    """Start a new ``if``/``elif`` branch with a translated expression.
+
+    Pulls every ``$VAR`` named in the expression into ``state.referenced_vars``
+    so the preamble can declare them as Lua ``local``\\ s. An expression
+    we can't translate (compound boolean, unknown shape) flips the scope's
+    ``untranslatable`` flag — the closing ``endif`` then dumps the whole
+    block into the manual-conversion list.
+    """
+    translated = translate_expression(directive.expression)
+    if translated is None:
+        scope.untranslatable = True
+        scope.branches.append(_CondBranch(lua_expr=None, boundary=directive))
+        return
+    lua_expr, refs = translated
+    for name in refs:
+        value = owning_doc.variables.get(name)
+        if value is not None and name not in state.referenced_vars:
+            state.referenced_vars[name] = value
+    scope.branches.append(_CondBranch(lua_expr=lua_expr, boundary=directive))
+
+
+@dataclass
+class _RawLua(Line):
+    """Synthetic line that carries pre-rendered Lua for a nested conditional.
+
+    When a nested ``# hyprlang if … endif`` closes inside an outer scope's
+    branch, the rendered Lua text needs to land in the outer branch's body.
+    Wrapping it in a ``Line`` subclass keeps the outer branch's ``lines``
+    list homogeneous so the sub-walker can pass over it without special
+    casing in every isinstance check.
+    """
+
+
+def _emit_conditional_block(
+    scope: _CondScope, outer_state: _EmitState, owning_doc: Document
+) -> str:
+    """Render a closed scope as a single ``if … elseif … else … end`` chunk.
+
+    Each branch's buffered lines run through a fresh sub-state, the resulting
+    flat Lua statements get indented and wrapped by the branch keyword
+    (``if EXPR then`` / ``elseif EXPR then`` / ``else``). Skipped entries
+    and referenced variables collected by the sub-state bubble up to
+    *outer_state* so the trailing manual-conversion block and the local
+    preamble see the full picture.
+    """
+    parts: list[str] = []
+    for i, branch in enumerate(scope.branches):
+        sub_state = _EmitState(emit_migration_markers=outer_state.emit_migration_markers)
+        for ln in branch.lines:
+            if isinstance(ln, _RawLua):
+                sub_state.current.extras.append(ln.raw)
+            else:
+                _process_line(ln, sub_state, owning_doc)
+        outer_state.skipped.extend(sub_state.skipped)
+        for name, value in sub_state.referenced_vars.items():
+            if name not in outer_state.referenced_vars:
+                outer_state.referenced_vars[name] = value
+        body = _render_state_flat(sub_state)
+        if branch.lua_expr is None:
+            parts.append("else\n")
+        elif i == 0:
+            parts.append(f"if {branch.lua_expr} then\n")
+        else:
+            parts.append(f"elseif {branch.lua_expr} then\n")
+        if body:
+            parts.append(_indent_block(body, INDENT))
+    parts.append("end")
+    return "".join(parts)
+
+
+def _render_state_flat(state: _EmitState) -> str:
+    """Render a sub-state as a flat sequence of Lua statements.
+
+    Drops the group-header convention (``-- header`` lines) that
+    :func:`_assemble_lua` uses at the top level — inside a conditional
+    branch, topical comments would create noise without the visual section
+    breaks that make sense at the file scope. ``skipped`` is intentionally
+    not rendered here; the caller already bubbles it up to the outer state.
+    """
+    parts: list[str] = []
+    for group in state.groups:
+        if group.config_tree:
+            parts.append(f"hl.config({format_table(group.config_tree, indent=0)})\n")
+        if group.extras:
+            parts.extend(f"{call}\n" for call in group.extras)
+        if group.exec_start:
+            parts.append(format_exec_block("hyprland.start", group.exec_start))
+        if group.exec_shutdown:
+            parts.append(format_exec_block("hyprland.shutdown", group.exec_shutdown))
+    return "".join(parts)
+
+
+def _indent_block(text: str, prefix: str) -> str:
+    """Prefix every non-empty line of *text* with *prefix*.
+
+    Empty lines stay empty (no trailing whitespace on blank rows) so the
+    rendered Lua reads cleanly when the branch body has internal spacing.
+    """
+    return "".join((prefix + ln if ln.strip() else ln) for ln in text.splitlines(keepends=True))

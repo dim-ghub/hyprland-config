@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-05-18
+
+### Added
+
+- `# hyprlang if/elif/else/endif` blocks translate to Lua `if/elseif/else/end`; referenced `$VAR`s emit as `local` declarations. Supports `==`, `!=`, `>`, `<`, `>=`, `<=`, and bare-`$VAR` truthy checks. Compound expressions and `# hyprlang noerror` fall back to the manual-conversion block.
+
+### Fixed
+
+- `# hyprlang if/endif` body lines no longer emit unconditionally in Lua output — previously the directives were dropped while their wrapped assignments leaked into the result.
+
 ## [0.6.4] - 2026-05-17
 
 ### Added
@@ -203,6 +213,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.6.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.5
 [0.6.4]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.4
 [0.6.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.3
 [0.6.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.2
