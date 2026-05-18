@@ -147,15 +147,20 @@ class TestKeyFormatting:
 
 
 class TestUnsupportedKeywords:
-    def test_submap_goes_to_todo_section(self) -> None:
-        # A line-by-line submap emitter can't express Lua's declarative
-        # ``hl.define_submap(NAME, function() <binds> end)`` shape — the
-        # body has to know the binds up-front. Config-load path drops it
-        # in the manual-conversion block; runtime callers use
-        # :func:`define_submap_to_lua`.
-        out = serialize_lua(parse_string("submap = resize\n"))
-        assert "-- TODO" in out
-        assert "submap = resize" in out
+    def test_submap_block_translated_not_todo(self) -> None:
+        # The walker now buffers the ``submap = NAME`` … ``submap = reset``
+        # range and emits a single ``hl.define_submap(NAME, function() …
+        # end)``. An empty submap (no binds inside) is dropped — Hyprland
+        # rejects those at runtime, so the empty Lua call would just be noise.
+        empty = serialize_lua(parse_string("submap = resize\n"))
+        assert "hl.define_submap" not in empty
+        assert "-- TODO" not in empty
+
+        populated = serialize_lua(
+            parse_string("submap = resize\nbind = , right, resizeactive, 10 0\nsubmap = reset\n")
+        )
+        assert 'hl.define_submap("resize", function()' in populated
+        assert "-- TODO" not in populated
 
     def test_unbind_emits_hl_unbind_call(self) -> None:
         # hyprmod's override flow leans on unbind lines: when our managed
@@ -193,13 +198,12 @@ class TestUnsupportedKeywords:
         assert "plugin =" in out
 
     def test_multiple_unsupported_listed_in_one_todo_block(self) -> None:
-        # ``submap`` is line-by-line untranslatable (see
-        # :func:`test_submap_goes_to_todo_section`); both entries land in
-        # the same manual-conversion block.
-        out = serialize_lua(parse_string("submap = resize\nsubmap = workflow\n"))
+        # ``plugin =`` with no path and a malformed bind both surface in the
+        # same trailing TODO block — one ``-- TODO`` header for all of them.
+        out = serialize_lua(parse_string("plugin =\nbind = SUPER\n"))
         assert out.count("-- TODO") == 1
-        assert "submap = resize" in out
-        assert "submap = workflow" in out
+        assert "plugin =" in out
+        assert "bind = SUPER" in out
 
 
 class TestStructure:
@@ -214,7 +218,7 @@ class TestStructure:
         assert 'hl.env("X", "1")' in out
 
     def test_assignments_then_extras_then_todo(self) -> None:
-        out = serialize_lua(parse_string("general:gaps_in = 5\nenv = X, 1\nsubmap = resize\n"))
+        out = serialize_lua(parse_string("general:gaps_in = 5\nenv = X, 1\nplugin =\n"))
         # The three blocks appear in this order.
         config_idx = out.index("hl.config(")
         env_idx = out.index("hl.env")

@@ -36,6 +36,16 @@ class TestParseBind:
         assert bd.mods == []
         assert bd.key == "Print"
 
+    def test_trailing_comma_in_arg_stripped(self):
+        # `bind = SUPER, J, layoutmsg, togglesplit,` is real-world Hyprlang —
+        # users put a trailing comma for visual symmetry or as an artefact of
+        # an earlier inline comment. The trailing empty field used to glue
+        # itself onto the dispatcher arg as `"togglesplit,"`.
+        bd = parse_bind_line("bind = SUPER, J, layoutmsg, togglesplit,")
+        assert bd is not None
+        assert bd.dispatcher == "layoutmsg"
+        assert bd.arg == "togglesplit"
+
 
 class TestBindData:
     def test_to_line(self):

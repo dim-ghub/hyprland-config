@@ -309,6 +309,48 @@ class TestBlockRuleSyntax:
         out = serialize_lua(parse_string(config))
         assert out.count("hl.window_rule({") == 2
 
+    def test_submap_block_wraps_binds_in_define_submap(self) -> None:
+        # Hyprlang's submap declaration is a directive — the binds between
+        # ``submap = NAME`` and ``submap = reset`` belong to that named map.
+        # Without the walker recognising this, those binds would leak to the
+        # global keymap (real bug surfaced by the vitorf7 dotfiles).
+        config = (
+            "bind = SUPER, R, submap, resize\n"
+            "submap = resize\n"
+            "bind = , right, resizeactive, 10 0\n"
+            "bind = , Escape, submap, reset\n"
+            "submap = reset\n"
+            "bind = SUPER, Q, killactive\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert 'hl.define_submap("resize", function()' in out
+        assert "end)" in out
+        # The submap-entry bind sits before define_submap, the unbound
+        # ``killactive`` sits after — both at global scope.
+        entry_idx = out.index('hl.bind("SUPER + R"')
+        define_idx = out.index("hl.define_submap")
+        global_idx = out.index('hl.bind("SUPER + Q"')
+        assert entry_idx < define_idx < global_idx
+        # No raw `submap = …` lines leaked to the TODO block.
+        assert "submap = resize" not in out
+        assert "submap = reset" not in out
+
+    def test_empty_submap_is_dropped(self) -> None:
+        # Hyprland rejects submaps with no binds. Emitting an empty
+        # ``hl.define_submap`` would just be noise.
+        config = "submap = resize\nsubmap = reset\n"
+        out = serialize_lua(parse_string(config))
+        assert "hl.define_submap" not in out
+
+    def test_unclosed_submap_still_emits(self) -> None:
+        # Truncated configs (in-progress edits) can end mid-submap. Without
+        # draining the open scope at assembly time, the body binds would
+        # silently vanish from the output.
+        config = "submap = resize\nbind = , right, resizeactive, 10 0\n"
+        out = serialize_lua(parse_string(config))
+        assert 'hl.define_submap("resize"' in out
+        assert "hl.dsp.window.resize" in out
+
     def test_windowrule_block_with_workspace_action(self) -> None:
         # ``workspace`` is also a top-level Hyprland keyword (``workspace = 1,
         # monitor:DP-1``), so the walker has to recognize it as a rule field

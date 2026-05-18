@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `# hyprlang if/elif/else/endif` blocks translate to Lua `if/elseif/else/end`; referenced `$VAR`s emit as `local` declarations. Supports `==`, `!=`, `>`, `<`, `>=`, `<=`, and bare-`$VAR` truthy checks. Compound expressions and `# hyprlang noerror` fall back to the manual-conversion block.
+- `submap = NAME` … `submap = reset` blocks translate to `hl.define_submap(NAME, function() <hl.bind…> end)`; binds inside the range are scoped to the named submap instead of leaking to the global keymap.
 
 ### Fixed
 
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `$name = value # comment` variable definitions no longer keep the trailing `# comment` as part of the value, fixing every downstream `$name` expansion.
 - `workspace = N` inside a `windowrule { … }` block stays as a field of the surrounding `hl.window_rule({...})` call instead of leaking out as a separate `hl.workspace_rule(...)`.
 - `source = $HOME/...` (and other unresolved `$NAME` references) now expand from the environment when no config-scope variable shadows them, matching how Hyprland resolves source paths.
+- `bind = SUPER, J, layoutmsg, togglesplit,` (trailing comma) no longer glues the empty trailing field onto the dispatcher arg as `"togglesplit,"`.
 
 ## [0.6.4] - 2026-05-17
 

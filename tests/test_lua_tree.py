@@ -149,12 +149,13 @@ class TestSerializeLuaTree:
         assert (subdir / "extra.lua") in tree
 
     def test_unmapped_lines_recorded_per_file(self, tmp_path) -> None:
-        # ``submap`` has no Lua equivalent — it lands in the unmapped list
-        # for its owning file, separate from the rendered content.
-        (tmp_path / "main.conf").write_text("submap = mysub\nbind = SUPER, Q, killactive,\n")
+        # An untranslatable line (here a malformed ``plugin =`` with no
+        # path) lands in the unmapped list for its owning file, separate
+        # from the rendered content.
+        (tmp_path / "main.conf").write_text("plugin =\nbind = SUPER, Q, killactive,\n")
         files = serialize_lua_tree(load(tmp_path / "main.conf"))
         assert len(files) == 1
-        assert any("submap" in entry for entry in files[0].unmapped)
+        assert any("plugin" in entry for entry in files[0].unmapped)
 
 
 class TestSerializeAny:

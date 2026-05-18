@@ -34,7 +34,11 @@ def parse_bind_line(line: str) -> BindData | None:
     mods_str = parts[0]
     key = parts[1]
     dispatcher = parts[2]
-    arg = parts[3] if len(parts) > 3 else ""
+    # A trailing comma in the bind line (``MODS, KEY, killactive,``) carries
+    # no meaning — it represents an empty fifth field that got absorbed into
+    # the arg slot when we split with ``maxsplit=3``. Strip it so dispatchers
+    # don't receive ``"togglesplit,"`` as their arg.
+    arg = parts[3].rstrip(",").strip() if len(parts) > 3 else ""
     mods = mods_str.split() if mods_str else []
     return BindData(
         bind_type=btype,

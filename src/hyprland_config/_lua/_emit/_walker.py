@@ -27,9 +27,13 @@ Coverage:
   migration. Bind dispatchers become a closure
   (``function() hl.config({...}) end``), top-level execs become a bare
   ``hl.config({...})`` inside the start/shutdown block.
+- ``submap = NAME`` … ``submap = reset`` blocks → one
+  ``hl.define_submap(NAME, function() <hl.bind…> end)`` call; binds
+  inside the range get scoped to the named submap instead of leaking
+  to the global keymap.
 
 Anything we can't translate confidently (an unmapped dispatcher, a malformed
-rule, ``unbind``, ``submap``, ``plugin``) lands at the bottom in a trailing
+rule, a plugin we don't recognise) lands at the bottom in a trailing
 manual-conversion block so users can see exactly what wasn't migrated.
 """
 
@@ -93,6 +97,21 @@ class _Group:
 
 
 @dataclass
+class _SubmapScope:
+    """An open ``submap = NAME`` block being collected.
+
+    Hyprlang submaps run from a ``submap = NAME`` declaration until the next
+    ``submap = reset`` (or the end of the document). Every bind in that
+    range belongs inside ``hl.define_submap(NAME, function() … end)``; the
+    rendered ``hl.bind(...)`` strings accumulate in ``body`` and get wrapped
+    when the closing ``reset`` fires.
+    """
+
+    name: str
+    body: list[str] = field(default_factory=list)
+
+
+@dataclass
 class _CondBranch:
     """One branch of a translated conditional block.
 
@@ -149,6 +168,7 @@ class _EmitState:
     skipped: list[str] = field(default_factory=list)
     section_stack: list[tuple[str, dict[str, Any] | None]] = field(default_factory=list)
     cond_stack: list[_CondScope] = field(default_factory=list)
+    submap: _SubmapScope | None = None
     referenced_vars: dict[str, str] = field(default_factory=dict)
     emit_migration_markers: bool = True
 
@@ -297,6 +317,7 @@ def _assemble_lua(state: _EmitState) -> str:
     the conditional logic actually needs.
     """
     _drain_open_conditionals(state)
+    _close_submap(state)
     sections: list[str] = []
     if state.referenced_vars:
         sections.append(_format_var_preamble(state.referenced_vars))
@@ -505,6 +526,15 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
     # defined them, so we use the owning doc's scope for expansion.
     args = owning_doc.expand(line.value)
 
+    # ``submap = NAME`` opens a Hyprlang submap; the binds that follow until
+    # the matching ``submap = reset`` belong to it. Lua's ``hl.define_submap``
+    # is declarative, so the walker buffers the body until reset (or EOF)
+    # then emits the whole ``hl.define_submap(NAME, function() … end)``
+    # block as one unit.
+    if name == "submap":
+        _handle_submap_directive(args, state)
+        return
+
     # The exec family writes into dedicated buckets so the assembler can
     # wrap them in ``hl.on("hyprland.start", function() … end)`` blocks
     # at the end. For one-shot migrations ``exec-once`` gets an inline
@@ -537,16 +567,17 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
         result = emit_bind(name, args)
         if result is None:
             state.skipped.append(f"{name} = {args}")
+        elif state.submap is not None:
+            state.submap.body.append(result)
         else:
             state.current.extras.append(result)
         return
 
     emitter = STATIC_KEYWORD_EMITTERS.get(name)
     if emitter is None:
-        # ``submap`` lands here on purpose (see ``STATIC_KEYWORD_EMITTERS``
-        # docstring); anything else is a future / plugin keyword we don't
-        # yet translate. Either way, surface the original line in the
-        # manual-conversion block instead of silently producing invalid Lua.
+        # Future or plugin keyword we don't yet translate. Surface the
+        # original line in the manual-conversion block instead of silently
+        # producing invalid Lua.
         state.skipped.append(f"{name} = {args}")
         return
     result = emitter(args)
@@ -554,6 +585,42 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
         state.skipped.append(f"{name} = {args}")
     else:
         state.current.extras.append(result)
+
+
+# ---------------------------------------------------------------------------
+# Submap block handling
+# ---------------------------------------------------------------------------
+
+
+def _handle_submap_directive(args: str, state: _EmitState) -> None:
+    """Open, switch, or close the current submap scope.
+
+    ``submap = reset`` closes the current scope; any other name opens a new
+    one (closing the previous one first if a misbehaving config skipped the
+    reset). Empty submaps are dropped on close — Hyprland rejects them with
+    "submap with no binds", and emitting an ``hl.define_submap`` that
+    registers nothing is just noise.
+    """
+    target = args.strip()
+    if target == "reset":
+        _close_submap(state)
+        return
+    if state.submap is not None:
+        _close_submap(state)
+    state.submap = _SubmapScope(name=target)
+
+
+def _close_submap(state: _EmitState) -> None:
+    """Finalize the active submap into an ``hl.define_submap(...)`` call."""
+    submap = state.submap
+    if submap is None:
+        return
+    state.submap = None
+    if not submap.body:
+        return
+    indented = "\n".join(f"{INDENT}{ln}" for ln in submap.body)
+    snippet = f"hl.define_submap({quote_string(submap.name)}, function()\n{indented}\nend)"
+    state.current.extras.append(snippet)
 
 
 # ---------------------------------------------------------------------------
