@@ -1,5 +1,6 @@
 """Line classification and document construction."""
 
+import os
 import re
 from pathlib import Path
 
@@ -206,8 +207,9 @@ def _parse_line(
     # Variable definition: $name = value
     m = _VARIABLE_RE.match(stripped)
     if m:
+        value, _ = _strip_inline_comment(m.group(2))
         return Variable(
-            raw=raw, lineno=lineno, source_name=source_name, name=m.group(1), value=m.group(2)
+            raw=raw, lineno=lineno, source_name=source_name, name=m.group(1), value=value
         )
 
     # Source directive
@@ -312,7 +314,11 @@ def _follow_sources(doc: Document, seen: set[Path], *, lenient: bool = False) ->
         if not isinstance(node, Source):
             continue
 
-        expanded_path = expand_value(node.path_str, doc.variables)
+        # Config-scope ``$var`` references win when both are defined, but
+        # bare ``$HOME`` / ``$XDG_CONFIG_HOME`` / etc. that Hyprland resolves
+        # from the environment fall through to ``os.path.expandvars`` so a
+        # ``source = $HOME/.config/hypr/...`` line actually follows.
+        expanded_path = os.path.expandvars(expand_value(node.path_str, doc.variables))
         relative_to = doc.path.parent if doc.path else None
         # Store resolved paths so cycle/exclusion checks don't have to redo
         # the .resolve() syscall on every traversal.

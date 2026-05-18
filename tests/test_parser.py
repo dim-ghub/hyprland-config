@@ -254,6 +254,19 @@ class TestInlineComments:
         assert isinstance(node, Keyword)
         assert node.inline_comment == "# dwindle"
 
+    def test_variable_inline_comment_stripped_from_value(self):
+        # `$mainMod = ALT # Sets main modifier` is real-world Hyprlang; the
+        # parser used to leak the comment into the variable's value, so
+        # every `$mainMod` reference downstream resolved to the broken
+        # `"ALT # Sets main modifier"` string.
+        doc = parse_string("$mainMod = ALT # Sets main modifier\n")
+        from hyprland_config import Variable
+
+        node = doc.lines[0]
+        assert isinstance(node, Variable)
+        assert node.value == "ALT"
+        assert doc.variables["mainMod"] == "ALT"
+
 
 class TestEscapedHash:
     """Tests for ## escape producing literal # in values."""

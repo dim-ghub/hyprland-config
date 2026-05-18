@@ -103,6 +103,61 @@ class TestDocumentSourceFollowing:
 
 
 # ---------------------------------------------------------------------------
+# Environment variable expansion
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarExpansion:
+    """Real Hyprland resolves ``$HOME`` / ``$XDG_CONFIG_HOME`` etc. in source
+    paths from the environment, even when the variable isn't defined as a
+    config-scope ``$name = …`` line. Without this, every config that uses
+    ``source = $HOME/.config/hypr/foo.conf`` silently fails to follow.
+    """
+
+    def test_home_from_environment(self, tmp_path, monkeypatch):
+        sub = tmp_path / "sub.conf"
+        sub.write_text("sub_key = sub_value\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        main = tmp_path / "main.conf"
+        main.write_text("source = $HOME/sub.conf\n")
+
+        doc = load(main, follow_sources=True)
+        source_node = doc.lines[0]
+        assert isinstance(source_node, Source)
+        assert len(source_node.documents) == 1
+        assert source_node.documents[0].get("sub_key") == "sub_value"
+
+    def test_braced_envvar(self, tmp_path, monkeypatch):
+        # ``${HOME}`` syntax (shell-style braces) also works since we delegate
+        # to ``os.path.expandvars``.
+        sub = tmp_path / "sub.conf"
+        sub.write_text("k = v\n")
+        monkeypatch.setenv("MY_CONF_DIR", str(tmp_path))
+        main = tmp_path / "main.conf"
+        main.write_text("source = ${MY_CONF_DIR}/sub.conf\n")
+
+        doc = load(main, follow_sources=True)
+        source_node = doc.lines[0]
+        assert isinstance(source_node, Source)
+        assert len(source_node.documents) == 1
+
+    def test_config_variable_wins_over_env(self, tmp_path, monkeypatch):
+        # If the user redefines ``$HOME`` as a config-scope variable, that
+        # value wins — env fallback only kicks in for unresolved references.
+        sub_a = tmp_path / "a"
+        sub_a.mkdir()
+        (sub_a / "sub.conf").write_text("from = config\n")
+        monkeypatch.setenv("HOME", "/nonexistent/should/not/be/used")
+        main = tmp_path / "main.conf"
+        main.write_text(f"$HOME = {sub_a}\nsource = $HOME/sub.conf\n")
+
+        doc = load(main, follow_sources=True)
+        source_node = doc.lines[1]
+        assert isinstance(source_node, Source)
+        assert source_node.documents[0].get("from") == "config"
+
+
+# ---------------------------------------------------------------------------
 # Absolute path globs
 # ---------------------------------------------------------------------------
 

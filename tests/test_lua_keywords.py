@@ -309,6 +309,24 @@ class TestBlockRuleSyntax:
         out = serialize_lua(parse_string(config))
         assert out.count("hl.window_rule({") == 2
 
+    def test_windowrule_block_with_workspace_action(self) -> None:
+        # ``workspace`` is also a top-level Hyprland keyword (``workspace = 1,
+        # monitor:DP-1``), so the walker has to recognize it as a rule field
+        # when it appears inside a ``windowrule { … }`` block — otherwise it
+        # leaks out as a separate ``hl.workspace_rule(...)`` call and the
+        # original window rule loses its assignment action.
+        config = (
+            "windowrule {\n"
+            "    name = ghostty-in-ws-1\n"
+            "    match:class = ghostty\n"
+            "    workspace = 1\n"
+            "}\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert out.count("hl.window_rule({") == 1
+        assert "hl.workspace_rule" not in out
+        assert "workspace = 1," in out
+
 
 class TestExecBlocks:
     def test_exec_batched_in_start_block(self) -> None:

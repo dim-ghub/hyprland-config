@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `# hyprlang if/endif` body lines no longer emit unconditionally in Lua output — previously the directives were dropped while their wrapped assignments leaked into the result.
+- `$name = value # comment` variable definitions no longer keep the trailing `# comment` as part of the value, fixing every downstream `$name` expansion.
+- `workspace = N` inside a `windowrule { … }` block stays as a field of the surrounding `hl.window_rule({...})` call instead of leaking out as a separate `hl.workspace_rule(...)`.
+- `source = $HOME/...` (and other unresolved `$NAME` references) now expand from the environment when no config-scope variable shadows them, matching how Hyprland resolves source paths.
 
 ## [0.6.4] - 2026-05-17
 

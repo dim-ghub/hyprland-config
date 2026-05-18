@@ -469,6 +469,18 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
         return
 
     if isinstance(line, Keyword):
+        if state.section_stack:
+            cur_name, cur_buf = state.section_stack[-1]
+            if cur_name in _BLOCK_RULE_SECTIONS and cur_buf is not None:
+                # Inside a `windowrule { … }` / `windowrulev2 { … }` / `layerrule { … }`
+                # block, keywords like ``workspace`` are rule actions, not the
+                # top-level keyword (`workspace = 1, monitor:DP-1` defines a
+                # workspace rule; the same line inside a windowrule block tells
+                # Hyprland to assign matching windows to workspace 1). Route
+                # the field into the block buffer instead of falling through
+                # to the standalone-keyword emitter.
+                add_block_rule_field(cur_buf, line.key, line.value)
+                return
         _process_keyword(line, state, owning_doc)
 
 
