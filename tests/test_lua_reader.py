@@ -517,13 +517,15 @@ class TestRoundTripWithEmitter:
         assert _keywords(doc, "animation") == ["windows, true, 7, easeOut, slide"]
 
     def test_round_trip_exec_and_exec_shutdown(self, tmp_path: Path) -> None:
-        # Emitter wraps exec lines in ``hl.on("hyprland.start", function() … end)``;
-        # the reader has to execute the callback to recover them.
+        # The three exec keywords carry distinct semantics that survive the
+        # round-trip: ``exec`` lands at top-level (re-runs on every reload
+        # via file re-evaluation); ``exec-once`` nests in an
+        # ``hl.on("hyprland.start", …)`` block (fires once at session
+        # startup); ``exec-shutdown`` nests in the matching shutdown block.
         src = "exec = waybar\nexec-once = nm-applet\nexec-shutdown = sync\n"
         doc = self._via_lua(src, tmp_path)
-        # exec-once collapses to exec (Lua's hl.on fires on every reload —
-        # there's no run-once semantics to preserve).
-        assert _keywords(doc, "exec") == ["waybar", "nm-applet"]
+        assert _keywords(doc, "exec") == ["waybar"]
+        assert _keywords(doc, "exec-once") == ["nm-applet"]
         assert _keywords(doc, "exec-shutdown") == ["sync"]
 
     def test_round_trip_multi_file_tree(self, tmp_path: Path) -> None:

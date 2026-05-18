@@ -18,6 +18,21 @@ _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Hyprlang accepts these (case-insensitive) for boolean-typed options;
+# Hyprland's Lua API only accepts native Lua `true`/`false`, so we coerce.
+# ``0``/``1`` are deliberately not on this list — plenty of non-bool options
+# legitimately take small integers, and without schema awareness we can't tell
+# which is which.
+_BOOL_TRUE_WORDS = frozenset({"true", "yes", "on"})
+_BOOL_FALSE_WORDS = frozenset({"false", "no", "off"})
+
+# Hyprland's Hyprlang parser reads a boolean field by looking at the leading
+# token only — ``enabled = yes, please :)`` is accepted as truthy because
+# the value starts with ``yes``. The ``\b`` boundary anchor stops the regex
+# from mis-coercing ``yesterday``, ``offer``, ``nope``, ``oneshot``, etc.,
+# where a bool word appears as a prefix but the field is genuinely a string.
+_LENIENT_BOOL_RE = re.compile(r"^(true|false|yes|no|on|off)\b", re.IGNORECASE)
+
 # Lua reserved words can't be used as bare-key identifiers in table literals.
 _LUA_KEYWORDS = frozenset(
     {
@@ -100,7 +115,14 @@ def coerce_value(s: str) -> Any:
     Without schema awareness we key off the literal shape:
 
     - exact integer/float literals become numbers,
-    - the case-insensitive words ``true``/``false`` become booleans,
+    - boolean words Hyprland's Hyprlang parser recognises
+      (``true``/``yes``/``on`` and ``false``/``no``/``off``, case-insensitive)
+      become booleans. The match is lenient on the trailing characters — a
+      decorative ``enabled = yes, please :)`` line still coerces to ``true``
+      because Hyprland's bool parser ignores everything after the leading
+      token. The ``\\b`` boundary anchor avoids mis-coercing identifiers
+      that merely start with a bool word (``yesterday``, ``oneshot``,
+      ``offer``, …),
     - multi-colour gradients (``rgba(…) rgba(…) 45deg``) become a structured
       ``{colors = {…}, angle = N}`` dict, matching the form Hyprland's Lua API
       uses in the official example,
@@ -111,10 +133,9 @@ def coerce_value(s: str) -> Any:
         return int(stripped)
     if _FLOAT_RE.match(stripped):
         return float(stripped)
-    if stripped.lower() == "true":
-        return True
-    if stripped.lower() == "false":
-        return False
+    bool_match = _LENIENT_BOOL_RE.match(stripped)
+    if bool_match is not None:
+        return bool_match.group(1).lower() in _BOOL_TRUE_WORDS
     gradient = _try_gradient(stripped)
     if gradient is not None:
         return gradient

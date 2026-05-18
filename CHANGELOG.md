@@ -5,7 +5,17 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.6] - 2026-05-18
+
+### Fixed
+
+- Lua emitter no longer collapses `exec` and `exec-once` into the same `hl.on("hyprland.start", …)` block. `exec` now emits at top level (re-runs on reload, matching Hyprlang's semantics); `exec-once` stays inside `hl.on` so its callback fires only at session startup
+- Lua reader maps `hl.exec_cmd(...)` calls inside `hl.on("hyprland.start", …)` back to `exec-once` rather than `exec`, preserving the distinction across round-trips
+- Hyprlang boolean aliases `yes`/`no`/`on`/`off` (case-insensitive) now coerce to Lua `true`/`false` instead of quoted strings — Hyprland's Lua loader rejected the quoted form with `boolean type requires a bool`. Match is lenient on trailing characters, matching Hyprland's own parser
+
+### Changed
+
+- `emit_migration_markers` on `serialize_lua()`, `serialize_lua_tree()`, and `serialize_any()` is now a no-op. The `-- TODO: was exec-once` hint it controlled is unnecessary now that `exec` and `exec-once` are shape-distinct. Parameter kept for backwards compatibility
 
 ## [0.6.5] - 2026-05-18
 
@@ -218,6 +228,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.6.6]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.6
 [0.6.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.5
 [0.6.4]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.4
 [0.6.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.3

@@ -186,8 +186,9 @@ def serialize_any(doc: Document, path: str | Path, *, emit_migration_markers: bo
     :func:`serialize_hyprlang`. The path is inspected only for its
     suffix; no I/O is performed.
 
-    ``emit_migration_markers`` is forwarded to :func:`serialize_lua` for
-    Lua targets and ignored otherwise; see that function for details.
+    ``emit_migration_markers`` is accepted for backwards compatibility and
+    forwarded to :func:`serialize_lua`, but is now a no-op (see that
+    function's docstring for the history).
     """
     if Path(path).suffix == ".lua":
         return serialize_lua(doc, emit_migration_markers=emit_migration_markers)

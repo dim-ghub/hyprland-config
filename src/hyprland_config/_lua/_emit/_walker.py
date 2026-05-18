@@ -18,15 +18,18 @@ Coverage:
 - ``windowrule`` / ``windowrulev2`` / ``layerrule`` / ``workspace`` /
   ``gesture`` / ``permission`` → matching ``hl.*`` calls.
 - ``device { … }`` section → ``hl.device({...})``.
-- ``exec`` / ``exec-once`` → batched into one
-  ``hl.on("hyprland.start", function() … end)`` block; ``exec-shutdown``
-  into the matching ``hyprland.shutdown`` block.
+- ``exec`` → top-level ``hl.exec_cmd(...)`` (Lua re-evaluates the file on
+  every reload, matching Hyprlang ``exec`` semantics). ``exec-once`` is
+  batched into one ``hl.on("hyprland.start", function() … end)`` block
+  whose callback only fires at session startup; ``exec-shutdown`` lands
+  in the matching ``hyprland.shutdown`` block.
 - ``exec, hyprctl keyword <section>:<option> <value>`` (in a bind or at
   top level) → ``hl.config({...})``: Lua-mode Hyprland rejects the
   ``keyword`` IPC verb, so the shell-out would silently break post-
   migration. Bind dispatchers become a closure
-  (``function() hl.config({...}) end``), top-level execs become a bare
-  ``hl.config({...})`` inside the start/shutdown block.
+  (``function() hl.config({...}) end``); top-level ``exec`` execs become
+  a bare ``hl.config({...})`` call, while ``exec-once``/``exec-shutdown``
+  versions nest inside their ``hl.on`` block.
 - ``submap = NAME`` … ``submap = reset`` blocks → one
   ``hl.define_submap(NAME, function() <hl.bind…> end)`` call; binds
   inside the range get scoped to the named submap instead of leaking
@@ -92,7 +95,12 @@ class _Group:
     header: str | None = None
     config_tree: dict[str, Any] = field(default_factory=dict)
     extras: list[str] = field(default_factory=list)
-    exec_start: list[str] = field(default_factory=list)  # exec / exec-once
+    # Startup-only (``exec-once``) and shutdown-only (``exec-shutdown``)
+    # commands collect here so the assembler can wrap each list in one
+    # ``hl.on(event, function() … end)`` block. ``exec`` (every-reload)
+    # entries skip these buckets and go straight into ``extras`` — they
+    # belong at top-level so file re-evaluation on reload re-runs them.
+    exec_once: list[str] = field(default_factory=list)
     exec_shutdown: list[str] = field(default_factory=list)
 
 
@@ -170,7 +178,6 @@ class _EmitState:
     cond_stack: list[_CondScope] = field(default_factory=list)
     submap: _SubmapScope | None = None
     referenced_vars: dict[str, str] = field(default_factory=dict)
-    emit_migration_markers: bool = True
 
     @property
     def current(self) -> _Group:
@@ -209,20 +216,20 @@ def serialize_lua(doc: Document, *, emit_migration_markers: bool = True) -> str:
     banner — consumers brand their output via Comment nodes if they want
     one.
 
-    ``emit_migration_markers`` controls one-shot migration hints — currently
-    the ``-- TODO: was exec-once`` suffix on translated ``exec-once`` shell
-    commands. Defaults to ``True`` so a standalone Hyprlang→Lua conversion
-    surfaces the ambiguity (Lua has no built-in distinction between
-    "fire-at-start" and "fire-at-start-and-every-reload"). Tools that
-    repeatedly re-serialize their own managed config — where the user has
-    already disambiguated intent through a UI — should pass ``False`` to
-    keep saves quiet.
+    ``emit_migration_markers`` is accepted for backwards compatibility but
+    is now a no-op. It used to control the ``-- TODO: was exec-once``
+    suffix on translated ``exec-once`` shell commands; that hint existed
+    because the emitter wrapped both ``exec`` and ``exec-once`` in
+    ``hl.on("hyprland.start", …)`` and lost the distinction. The emitter
+    now keeps the two apart (``exec`` emits at top level, ``exec-once``
+    in the ``hl.on`` block), so the marker isn't needed.
 
     Use :func:`serialize_lua_tree` instead when you want to preserve the
     original ``hyprland.conf.d/*.conf`` split as separate ``.lua`` files
     bridged by ``dofile()`` calls.
     """
-    state = _EmitState(emit_migration_markers=emit_migration_markers)
+    del emit_migration_markers
+    state = _EmitState()
     for owning_doc, line in doc.iter_lines(recursive=True):
         _process_line(line, state, owning_doc)
     return _assemble_lua(state)
@@ -249,18 +256,19 @@ def serialize_lua_tree(doc: Document, *, emit_migration_markers: bool = True) ->
 
     See :func:`serialize_lua` for the meaning of ``emit_migration_markers``.
     """
+    del emit_migration_markers
     output: list[LuaFile] = []
-    _emit_doc_tree(doc, output, emit_migration_markers=emit_migration_markers)
+    _emit_doc_tree(doc, output)
     return output
 
 
-def _emit_doc_tree(doc: Document, output: list[LuaFile], *, emit_migration_markers: bool) -> None:
+def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
     """Recursively render *doc* and its sourced children into *output*."""
-    state = _EmitState(emit_migration_markers=emit_migration_markers)
+    state = _EmitState()
     for line in doc.lines:
         if isinstance(line, Source):
             for sub_doc in line.documents:
-                _emit_doc_tree(sub_doc, output, emit_migration_markers=emit_migration_markers)
+                _emit_doc_tree(sub_doc, output)
                 sub_lua_path = _conf_path_to_lua(sub_doc.path)
                 if sub_lua_path is not None:
                     state.current.extras.append(f"dofile({quote_string(str(sub_lua_path))})")
@@ -377,8 +385,8 @@ def _render_group(group: _Group) -> str | None:
         parts.append(f"hl.config({format_table(group.config_tree, indent=0)})\n")
     if group.extras:
         parts.append("".join(f"{call}\n" for call in group.extras))
-    if group.exec_start:
-        parts.append(format_exec_block("hyprland.start", group.exec_start))
+    if group.exec_once:
+        parts.append(format_exec_block("hyprland.start", group.exec_once))
     if group.exec_shutdown:
         parts.append(format_exec_block("hyprland.shutdown", group.exec_shutdown))
 
@@ -535,32 +543,31 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
         _handle_submap_directive(args, state)
         return
 
-    # The exec family writes into dedicated buckets so the assembler can
-    # wrap them in ``hl.on("hyprland.start", function() … end)`` blocks
-    # at the end. For one-shot migrations ``exec-once`` gets an inline
-    # marker comment since the Lua API doesn't carry that semantics —
-    # the user gets a visible reminder that the line will fire on every
-    # reload after migration. Tools doing repeat round-trip serialization
-    # of their own managed config disable the marker via the state flag.
+    # ``exec`` re-runs on every reload (the Lua file re-evaluates), so
+    # its translation lands in ``extras`` and renders at top level — same
+    # height as ``hl.env`` / ``hl.bind`` / etc. ``exec-once`` and
+    # ``exec-shutdown`` are event-bound: they batch into their dedicated
+    # buckets so the assembler can wrap each list in one
+    # ``hl.on(event, function() … end)`` block whose callback fires only
+    # on that event.
     if name in ("exec", "exec-once", "exec-shutdown"):
+        # Indent depth: ``exec`` writes at top level (no surrounding block),
+        # the others nest inside an ``hl.on`` body.
+        indent = 0 if name == "exec" else 1
         keyword = parse_hyprctl_keyword(args)
         dispatch_translation = _try_translate_hyprctl_dispatch(args)
         if keyword is not None:
-            # exec/exec-once distinction is moot for a keyword setter
-            # (idempotent on every call), so the inline marker comment
-            # is dropped in that branch.
-            translated = emit_keyword_config_call(*keyword, indent=1)
+            translated = emit_keyword_config_call(*keyword, indent=indent)
         elif dispatch_translation is not None:
             translated = f"hl.dispatch({dispatch_translation})"
-        elif name == "exec-once" and state.emit_migration_markers:
-            cmd_call = emit_exec_cmd_call(rewrite_hyprctl_dispatch_in_shell(args))
-            translated = f"{cmd_call}  -- TODO: was exec-once"
         else:
             translated = emit_exec_cmd_call(rewrite_hyprctl_dispatch_in_shell(args))
-        bucket = (
-            state.current.exec_shutdown if name == "exec-shutdown" else state.current.exec_start
-        )
-        bucket.append(translated)
+        if name == "exec":
+            state.current.extras.append(translated)
+        elif name == "exec-shutdown":
+            state.current.exec_shutdown.append(translated)
+        else:
+            state.current.exec_once.append(translated)
         return
 
     if is_bind_keyword(name):
@@ -742,7 +749,7 @@ def _emit_conditional_block(
     """
     parts: list[str] = []
     for i, branch in enumerate(scope.branches):
-        sub_state = _EmitState(emit_migration_markers=outer_state.emit_migration_markers)
+        sub_state = _EmitState()
         for ln in branch.lines:
             if isinstance(ln, _RawLua):
                 sub_state.current.extras.append(ln.raw)
@@ -780,8 +787,8 @@ def _render_state_flat(state: _EmitState) -> str:
             parts.append(f"hl.config({format_table(group.config_tree, indent=0)})\n")
         if group.extras:
             parts.extend(f"{call}\n" for call in group.extras)
-        if group.exec_start:
-            parts.append(format_exec_block("hyprland.start", group.exec_start))
+        if group.exec_once:
+            parts.append(format_exec_block("hyprland.start", group.exec_once))
         if group.exec_shutdown:
             parts.append(format_exec_block("hyprland.shutdown", group.exec_shutdown))
     return "".join(parts)

@@ -370,27 +370,36 @@ class TestHyprctlKeywordTranslation:
     # ---- top-level exec keyword ------------------------------------------
 
     def test_top_level_exec_hyprctl_keyword_becomes_hl_config(self) -> None:
+        # ``exec`` runs on every reload, so the translated ``hl.config``
+        # call sits at top level (not wrapped in any ``hl.on`` block).
         out = serialize_lua(parse_string("exec = hyprctl keyword decoration:rounding 10\n"))
-        assert 'hl.on("hyprland.start", function()' in out
+        assert 'hl.on("hyprland.start"' not in out
         assert "hl.config({" in out
         assert "rounding = 10," in out
         # The literal shell-out must not appear.
         assert "hyprctl keyword" not in out
         assert "hl.exec_cmd" not in out
 
-    def test_top_level_exec_once_drops_todo_marker_when_translated(self) -> None:
+    def test_top_level_exec_once_hyprctl_keyword_becomes_hl_config(self) -> None:
+        # ``exec-once`` still translates the ``hyprctl keyword`` shell-out
+        # to an ``hl.config`` call, just nested inside the start block.
         out = serialize_lua(parse_string("exec-once = hyprctl keyword decoration:rounding 10\n"))
-        # ``hl.config`` is idempotent — the "was exec-once" comment is
-        # misleading once translated, so it's dropped.
-        assert "TODO: was exec-once" not in out
+        assert 'hl.on("hyprland.start", function()' in out
         assert "hl.config({" in out
+        assert "rounding = 10," in out
+        assert "hyprctl keyword" not in out
+        assert "TODO: was exec-once" not in out
 
-    def test_top_level_exec_once_keeps_marker_for_passthrough(self) -> None:
-        # Non-keyword exec-once still gets the marker — the migration
-        # can't reason about whether the user actually wants re-run-on-
-        # reload semantics for an arbitrary shell command.
+    def test_top_level_exec_once_emits_in_hl_on_block(self) -> None:
+        # Plain ``exec-once = COMMAND`` (no hyprctl) wraps in
+        # ``hl.on("hyprland.start", …)`` whose callback fires only at
+        # session startup — the Lua equivalent of Hyprlang's run-once
+        # semantics.
         out = serialize_lua(parse_string("exec-once = waybar\n"))
-        assert "TODO: was exec-once" in out
+        assert 'hl.on("hyprland.start", function()' in out
+        assert 'hl.exec_cmd("waybar")' in out
+        # No migration marker — the distinction is preserved in the shape.
+        assert "TODO: was exec-once" not in out
 
     def test_top_level_exec_shutdown_translates(self) -> None:
         out = serialize_lua(
@@ -400,8 +409,8 @@ class TestHyprctlKeywordTranslation:
         assert "no_hardware_cursors = false," in out
 
     def test_top_level_exec_hyprctl_dispatch_uses_hl_dispatch(self) -> None:
-        # Top-level exec runs imperatively inside ``hl.on(…, function() end)``,
-        # so a dispatcher object needs to be invoked via ``hl.dispatch``.
+        # ``hyprctl dispatch VERB ARGS`` collapses to a native
+        # ``hl.dispatch(hl.dsp.*())`` call — no shell hop needed.
         out = serialize_lua(parse_string("exec = hyprctl dispatch dpms on\n"))
         assert 'hl.dispatch(hl.dsp.dpms("on"))' in out
         assert "hyprctl dispatch" not in out
@@ -410,19 +419,20 @@ class TestHyprctlKeywordTranslation:
         out = serialize_lua(parse_string("exec = sleep 1 && hyprctl dispatch dpms on\n"))
         assert ('hl.exec_cmd("sleep 1 && hyprctl dispatch \'hl.dsp.dpms(\\"on\\")\'")') in out
 
-    def test_mixed_exec_keyword_and_shellout_share_one_block(self) -> None:
-        # The batching logic that groups all exec lines into one
-        # ``hl.on("hyprland.start", …)`` block must keep working when
-        # one of the lines is a translated keyword.
+    def test_mixed_exec_lines_emit_in_source_order(self) -> None:
+        # ``exec`` emits at top level — when multiple ``exec`` entries
+        # interleave shell-out and translated-keyword calls, they preserve
+        # source order rather than getting batched into one block.
         out = serialize_lua(
             parse_string(
                 "exec = waybar\nexec = hyprctl keyword decoration:rounding 10\nexec = nm-applet\n"
             )
         )
-        assert out.count('hl.on("hyprland.start"') == 1
-        assert 'hl.exec_cmd("waybar")' in out
-        assert 'hl.exec_cmd("nm-applet")' in out
-        assert "rounding = 10," in out
+        assert 'hl.on("hyprland.start"' not in out
+        waybar = out.index('hl.exec_cmd("waybar")')
+        config = out.index("hl.config({")
+        applet = out.index('hl.exec_cmd("nm-applet")')
+        assert waybar < config < applet
 
     # ---- emit_keyword_line (one-shot live-apply API) ---------------------
 

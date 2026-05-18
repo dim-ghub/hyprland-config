@@ -170,14 +170,22 @@ def _handle_plugin_load(doc: Document, args: list[Any], source: str) -> None:
 
 def _handle_exec_cmd(doc: Document, args: list[Any], source: str) -> None:
     # ``hl.exec_cmd(cmd, event?)`` — the wrapper tags the call with the
-    # surrounding ``hl.on`` event (or ``nil`` at top level). Map
-    # ``hyprland.shutdown`` to ``exec-shutdown``; everything else
-    # (start, top-level) to ``exec``.
+    # surrounding ``hl.on`` event (or ``nil`` at top level). Hyprland tears
+    # down the Lua state on reload and re-executes every config file, so
+    # top-level calls fire on every reload (= ``exec``) while ``hl.on``
+    # callbacks only fire when their event does. ``hyprland.start`` only
+    # fires at actual session startup, not on reload, which is exactly the
+    # ``exec-once`` semantic.
     if not args:
         return
     cmd = str(args[0])
     event = args[1] if len(args) >= 2 else None
-    keyword = "exec-shutdown" if event == "hyprland.shutdown" else "exec"
+    if event == "hyprland.start":
+        keyword = "exec-once"
+    elif event == "hyprland.shutdown":
+        keyword = "exec-shutdown"
+    else:
+        keyword = "exec"
     _emit_keyword(doc, keyword, cmd, source=source)
 
 

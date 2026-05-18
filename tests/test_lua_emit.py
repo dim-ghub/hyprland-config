@@ -94,6 +94,38 @@ class TestValueCoercion:
         assert "x = true," in serialize_lua(parse_string("general:x = True\n"))
         assert "x = false," in serialize_lua(parse_string("general:x = FALSE\n"))
 
+    def test_bool_hyprlang_aliases(self) -> None:
+        # Hyprlang also accepts yes/no/on/off for boolean options; Hyprland's
+        # Lua API only takes native booleans, so we coerce all six spellings.
+        # Without this the user gets "boolean type requires a bool" at runtime.
+        assert "x = true," in serialize_lua(parse_string("general:x = yes\n"))
+        assert "x = false," in serialize_lua(parse_string("general:x = no\n"))
+        assert "x = true," in serialize_lua(parse_string("general:x = on\n"))
+        assert "x = false," in serialize_lua(parse_string("general:x = off\n"))
+        # Case-insensitive, same as true/false.
+        assert "x = true," in serialize_lua(parse_string("general:x = YES\n"))
+        assert "x = false," in serialize_lua(parse_string("general:x = Off\n"))
+
+    def test_bool_lenient_leading_token(self) -> None:
+        # Hyprland's Hyprlang parser reads only the leading token of a
+        # boolean field, so `enabled = yes, please :)` (a real value in the
+        # default config example) coerces to ``true``. Without this the
+        # joke value would survive as a Lua string and break Hyprland's
+        # strict boolean type check at load time.
+        assert "x = true," in serialize_lua(parse_string("general:x = yes, please :)\n"))
+        assert "x = true," in serialize_lua(parse_string("general:x = on whatever\n"))
+        assert "x = false," in serialize_lua(parse_string("general:x = no thanks\n"))
+
+    def test_bool_lenient_match_respects_word_boundary(self) -> None:
+        # Identifiers that merely start with a bool word stay as strings —
+        # ``yesterday`` is not truthy, ``offer`` is not falsy, ``oneshot``
+        # is not truthy. The ``\b`` boundary anchor in the regex guards
+        # against these false positives.
+        assert 'x = "yesterday",' in serialize_lua(parse_string("general:x = yesterday\n"))
+        assert 'x = "oneshot",' in serialize_lua(parse_string("general:x = oneshot\n"))
+        assert 'x = "offer",' in serialize_lua(parse_string("general:x = offer\n"))
+        assert 'x = "nope",' in serialize_lua(parse_string("general:x = nope\n"))
+
     def test_string_value_quoted(self) -> None:
         assert 'kb_layout = "us",' in serialize_lua(parse_string("input:kb_layout = us\n"))
 
@@ -271,9 +303,24 @@ class TestCommentGrouping:
         assert "-- Real section" in out
 
     def test_exec_blocks_respect_groups(self) -> None:
-        # exec lines under different comment sections produce separate
-        # hl.on("hyprland.start", function() … end) blocks, not one merged.
+        # ``exec`` keywords emit at top-level (one per call, every-reload
+        # semantics) — they don't get batched into an ``hl.on`` block.
+        # The grouping still applies: each section's calls render under
+        # its own ``-- header`` line in source order.
         config = "# Section A\nexec = waybar\n\n# Section B\nexec = nm-applet\n"
+        out = serialize_lua(parse_string(config))
+        assert 'hl.on("hyprland.start"' not in out
+        section_a = out.index("-- Section A")
+        waybar = out.index('hl.exec_cmd("waybar")')
+        section_b = out.index("-- Section B")
+        applet = out.index('hl.exec_cmd("nm-applet")')
+        assert section_a < waybar < section_b < applet
+
+    def test_exec_once_blocks_respect_groups(self) -> None:
+        # ``exec-once`` keywords under different comment sections produce
+        # separate ``hl.on("hyprland.start", function() … end)`` blocks,
+        # not one merged — each block stays within its topical group.
+        config = "# Section A\nexec-once = waybar\n\n# Section B\nexec-once = nm-applet\n"
         out = serialize_lua(parse_string(config))
         assert out.count('hl.on("hyprland.start"') == 2
 

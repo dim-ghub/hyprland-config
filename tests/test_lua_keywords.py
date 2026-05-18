@@ -371,26 +371,39 @@ class TestBlockRuleSyntax:
 
 
 class TestExecBlocks:
-    def test_exec_batched_in_start_block(self) -> None:
+    def test_exec_emits_at_top_level(self) -> None:
+        # ``exec`` runs on every reload (Hyprland re-evaluates the Lua
+        # file), so each translates to a bare top-level call instead of
+        # nesting in an ``hl.on("hyprland.start", …)`` block whose
+        # callback would only fire at session startup.
         out = serialize_lua(parse_string("exec = waybar\nexec = nm-applet\n"))
+        assert 'hl.on("hyprland.start"' not in out
+        assert 'hl.exec_cmd("waybar")' in out
+        assert 'hl.exec_cmd("nm-applet")' in out
+
+    def test_exec_once_batched_in_start_block(self) -> None:
+        # ``exec-once`` fires only at session startup; the ``hl.on``
+        # callback gives that semantics. Multiple entries in the same
+        # group share one block.
+        out = serialize_lua(parse_string("exec-once = waybar\nexec-once = nm-applet\n"))
         assert 'hl.on("hyprland.start", function()' in out
         assert 'hl.exec_cmd("waybar")' in out
         assert 'hl.exec_cmd("nm-applet")' in out
         # Only one start block, not two.
         assert out.count('hl.on("hyprland.start"') == 1
 
-    def test_exec_once_marked_with_comment(self) -> None:
-        out = serialize_lua(parse_string("exec-once = dunst\n"))
-        assert "TODO: was exec-once" in out
-
-    def test_exec_once_marker_suppressed_when_disabled(self) -> None:
-        # Repeat-serialization callers (e.g. a GUI re-saving its own
-        # managed config on every edit) opt out of the migration hint —
-        # the user already disambiguated intent through the UI.
-        out = serialize_lua(parse_string("exec-once = dunst\n"), emit_migration_markers=False)
-        assert "TODO: was exec-once" not in out
-        # The exec_cmd call itself must still be emitted.
-        assert 'hl.exec_cmd("dunst")' in out
+    def test_emit_migration_markers_is_noop(self) -> None:
+        # The parameter survives for backwards compatibility but no
+        # longer affects the output. The marker comment is gone entirely
+        # — the emitter now keeps ``exec`` and ``exec-once`` distinct,
+        # so there's nothing to flag for manual review.
+        with_flag = serialize_lua(parse_string("exec-once = dunst\n"))
+        without_flag = serialize_lua(
+            parse_string("exec-once = dunst\n"), emit_migration_markers=False
+        )
+        assert with_flag == without_flag
+        assert "TODO: was exec-once" not in with_flag
+        assert 'hl.exec_cmd("dunst")' in with_flag
 
     def test_exec_shutdown_separate_block(self) -> None:
         out = serialize_lua(parse_string("exec-shutdown = sync\n"))

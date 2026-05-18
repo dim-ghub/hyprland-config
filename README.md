@@ -198,7 +198,7 @@ Currently covered:
 - `gesture` → `hl.gesture({...})`.
 - `permission = REGEX, TYPE, ACTION` → `hl.permission("REGEX", "TYPE", "ACTION")`.
 - `device { name = …; sensitivity = …; }` block → `hl.device({...})`.
-- `exec` / `exec-once` → batched into one `hl.on("hyprland.start", function() … end)` block, with `exec-once` lines flagged for manual review. `exec-shutdown` → matching `hyprland.shutdown` block.
+- `exec` → `hl.exec_cmd(...)` at top level (every-reload semantics). `exec-once` → wrapped in `hl.on("hyprland.start", function() … end)` (start-only semantics). `exec-shutdown` → matching `hyprland.shutdown` block.
 - `# hyprlang if/elif/else/endif` blocks → native Lua `if … elseif … else … end`. `$VAR` references in the condition surface as `local NAME = "value"` declarations at the top of the output. Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, and bare-`$VAR` truthy checks. Compound boolean expressions (`and` / `or` / `not`) and `# hyprlang noerror` aren't translated.
 
 Anything we can't translate confidently — an unmapped dispatcher, an unsupported bind flag suffix, `unbind`, `submap`, `plugin`, a compound conditional expression — lands in a `-- TODO: manual conversion` block at the bottom of the output. The emitter is one-way: blank lines are dropped, and `$variable` definitions are inline-expanded at use sites (except for variables referenced by a translated conditional, which get a `local` declaration). Top-level `# …` comments become `-- …` Lua comments and split the following assignments into their own `hl.config({...})` call, keeping the topical structure the user wrote.
