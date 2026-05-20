@@ -113,6 +113,44 @@ class Keyword(KeyValueLine):
 
 
 @dataclass
+class Rule(Line):
+    """A structured windowrule / layerrule entry.
+
+    Both authored source forms — Hyprlang's special-category block
+    (``windowrule { name = X; match:class = Y; float = on }``) and Lua's
+    table call (``hl.window_rule({ name = "X", match = {...}, float =
+    true })``) — normalise into this single node so consumers don't
+    have to re-parse stringly-typed bodies.
+
+    The serializer for each output language picks the right surface
+    form: in Hyprlang, anonymous single-effect rules emit as
+    ``windowrule = match:class kitty, float on`` (the compact line)
+    while named, disabled, or multi-effect rules emit as the block;
+    in Lua, every Rule is one ``hl.window_rule({ … })`` call.
+
+    Fields:
+        kind: ``"windowrule"`` or ``"layerrule"``.
+        name: Optional rule name (Hyprland's Lua API can reference it
+            for dynamic enable/disable). Empty when anonymous.
+        enabled: ``False`` when defined-but-inactive (``enable = 0`` in
+            block form, ``enabled = false`` in Lua). Anonymous rules
+            can't be toggled at runtime but the flag round-trips.
+        matchers: Ordered ``[(key, value), …]`` pairs corresponding to
+            ``match:KEY VALUE`` clauses. Layer rules use ``namespace``;
+            window rules use ``class``, ``title``, etc.
+        effects: Ordered ``[(name, args), …]`` pairs. Bool effects
+            carry ``args=""`` and are emitted with their language's
+            default truthy value (``on`` in Hyprlang, ``true`` in Lua).
+    """
+
+    kind: str = "windowrule"
+    name: str = ""
+    enabled: bool = True
+    matchers: list[tuple[str, str]] = field(default_factory=list)
+    effects: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class Conditional(Line):
     """Hyprlang directive: # hyprlang <kind> [expression].
 

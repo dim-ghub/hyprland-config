@@ -24,7 +24,7 @@ from hyprland_config._lua._read._keywords import (
     emit_device,
     gesture_value,
     monitor_value,
-    rule_value,
+    rule_to_node,
     workspace_value,
 )
 
@@ -144,6 +144,25 @@ def _handle_table(keyword: str, value_fn: Callable[[dict[str, Any]], str]) -> Re
     return handler
 
 
+def _handle_rule(kind: str) -> RecordHandler:
+    """Handler factory: emits a structured :class:`Rule` node for
+    ``hl.window_rule({...})`` / ``hl.layer_rule({...})``.
+
+    Skips the Hyprlang-string detour the other ``_handle_table`` cases
+    take — Rule is a first-class Document node so the table maps to its
+    fields directly.
+    """
+
+    def handler(doc: Document, args: list[Any], source: str) -> None:
+        if not args or not isinstance(args[0], dict):
+            return
+        rule = rule_to_node(kind, args[0])
+        rule.source_name = source
+        doc.lines.append(rule)
+
+    return handler
+
+
 def _handle_config(doc: Document, args: list[Any], source: str) -> None:
     if args and isinstance(args[0], dict):
         emit_config_assignments(doc, args[0], source=source)
@@ -211,8 +230,8 @@ _RECORD_HANDLERS: dict[str, RecordHandler] = {
     "animation": _handle_table("animation", animation_value),
     "bind": _handle_bind,
     "unbind": _handle_unbind,
-    "window_rule": _handle_table("windowrule", rule_value),
-    "layer_rule": _handle_table("layerrule", rule_value),
+    "window_rule": _handle_rule("windowrule"),
+    "layer_rule": _handle_rule("layerrule"),
     "workspace_rule": _handle_table("workspace", workspace_value),
     "gesture": _handle_table("gesture", gesture_value),
     "permission": _handle_simple("permission"),

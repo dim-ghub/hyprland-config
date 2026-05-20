@@ -133,7 +133,15 @@ def _split_action_and_matchers(parts: list[str]) -> tuple[str, list[str]] | None
 
 
 def emit_windowrule(args: str, *, v2: bool) -> str:
-    """Shared implementation for ``windowrule`` and ``windowrulev2``."""
+    """Shared implementation for ``windowrule`` and ``windowrulev2``.
+
+    Handles raw Hyprlang single-line input — ``windowrule = match:K V,
+    EFFECT [ARGS]`` and the v1 / v2 legacy shapes. Block-form rules
+    (named, disabled, anything with structure that doesn't fit a
+    single line) are normalised to :class:`Rule` nodes by
+    :func:`hyprland_config.migrate` and emitted via the walker's
+    structured-rule path; they never reach this single-line emitter.
+    """
     # Bracket-aware split: regex matchers like ``class:^(foo|bar,baz)$`` carry
     # commas inside parens that a naive ``str.split(",")`` would mangle.
     parts = split_top_level(args)
@@ -156,7 +164,8 @@ def emit_layerrule(args: str) -> str:
     Accepts both the modern ``match:namespace …, effect …`` form and the
     legacy ``effect, REGEX`` shape. The legacy form treats the second
     token as the namespace regex when no ``match:`` prefix is present
-    anywhere.
+    anywhere. Block-form layer rules are emitted via the structured
+    Rule path (same as windowrules — see :func:`emit_windowrule`).
     """
     # Bracket-aware split — see emit_windowrule for the regex-matcher case.
     parts = split_top_level(args)

@@ -51,11 +51,13 @@ from hyprland_config._core._model import (
     Document,
     Keyword,
     Line,
+    Rule,
     SectionClose,
     SectionOpen,
     Source,
     Variable,
 )
+from hyprland_config._core._rules import LAYER_BOOL_EFFECTS, V3_BOOL_EFFECTS
 from hyprland_config._hyprlang._bind import is_bind_keyword
 from hyprland_config._lua._emit._bind import emit_bind
 from hyprland_config._lua._emit._conditional import translate_expression
@@ -469,7 +471,12 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
                 buffer["name"] = line.section_key
             state.section_stack.append(("device", buffer))
         elif line.name in _BLOCK_RULE_SECTIONS:
-            state.section_stack.append((line.name, {}))
+            # ``windowrule[my-name] { … }`` / ``layerrule[my-name] { … }``
+            # seeds ``name`` from the section key; an inner ``name = …``
+            # assignment in the block body overrides it via
+            # :func:`add_block_rule_field`'s plain-write semantics.
+            buffer = {"name": line.section_key} if line.section_key else {}
+            state.section_stack.append((line.name, buffer))
         else:
             state.section_stack.append((line.name, None))
         return
@@ -511,6 +518,56 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
                 add_block_rule_field(cur_buf, line.key, line.value)
                 return
         _process_keyword(line, state, owning_doc)
+        return
+
+    if isinstance(line, Rule):
+        _emit_rule(line, state)
+
+
+def render_rule_lua(rule: Rule) -> str:
+    """Render a structured :class:`Rule` as one ``hl.window_rule({…})``
+    / ``hl.layer_rule({…})`` call string.
+
+    Both rule kinds share the same table shape (``name``, ``enabled``,
+    ``match``, plus effect fields); only the wrapping function differs.
+    Used by the walker for full-document emission and by single-Rule
+    consumers (e.g. hyprmod's edit-dialog Lua preview) that need the
+    same snippet without standing up a Document.
+    """
+    table: dict[str, Any] = {}
+    if rule.name:
+        table["name"] = rule.name
+    if not rule.enabled:
+        table["enabled"] = False
+    if rule.matchers:
+        table["match"] = {k: coerce_value(v) for k, v in rule.matchers}
+    for name, args in rule.effects:
+        table[name] = _effect_value_to_lua(name, args)
+    fn = "hl.layer_rule" if rule.kind == "layerrule" else "hl.window_rule"
+    return f"{fn}({format_table(table, indent=0)})"
+
+
+def _emit_rule(rule: Rule, state: _EmitState) -> None:
+    """Append :func:`render_rule_lua` output to the active group's extras."""
+    state.current.extras.append(render_rule_lua(rule))
+
+
+def _effect_value_to_lua(name: str, args: str) -> Any:
+    """Coerce a Rule's stringly-typed effect args back to Lua-native form.
+
+    Bool effects come in as ``"on"`` / ``"off"`` from the Hyprlang side;
+    Lua wants ``true`` / ``false``. Numeric and string args route through
+    :func:`coerce_value` so quoted/escaped output matches what the user
+    would write by hand. Empty args on a known bool effect default to
+    ``true`` (Hyprland's "missing value" interpretation for these names).
+    """
+    stripped = args.strip()
+    if name in V3_BOOL_EFFECTS or name in LAYER_BOOL_EFFECTS:
+        if not stripped or stripped.lower() in ("on", "true", "yes", "1"):
+            return True
+        if stripped.lower() in ("off", "false", "no", "0"):
+            return False
+    return coerce_value(stripped)
 
 
 def _try_translate_hyprctl_dispatch(cmd: str) -> str | None:

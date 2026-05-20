@@ -50,6 +50,12 @@ def _keywords(doc, key: str) -> list[str]:
     return [ln.value for _doc, ln in doc.iter_lines() if isinstance(ln, Keyword) and ln.key == key]
 
 
+def _rules(doc, kind: str):
+    from hyprland_config import Rule
+
+    return [ln for _doc, ln in doc.iter_lines() if isinstance(ln, Rule) and ln.kind == kind]
+
+
 class TestConfigOptions:
     def test_top_level_option(self, tmp_path: Path) -> None:
         path = _write_lua(tmp_path, "hl.config({ general = { gaps_in = 5 } })\n")
@@ -207,20 +213,53 @@ class TestKeywordCalls:
         ]
 
     def test_window_rule_with_match(self, tmp_path: Path) -> None:
+        # The Lua reader builds structured Rule nodes directly — no
+        # detour through a Hyprlang-stringified intermediate.
         path = _write_lua(
             tmp_path,
             "hl.window_rule({ match = { class = '^kitty$' }, float = true })",
         )
-        # Hyprland 0.53+ rejects bare boolean effects — the canonical form
-        # is ``float on``, not just ``float``.
-        assert _keywords(load_lua(path), "windowrule") == ["float on, match:class ^kitty$"]
+        rules = _rules(load_lua(path), "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == ""
+        assert rules[0].enabled is True
+        assert rules[0].matchers == [("class", "^kitty$")]
+        assert rules[0].effects == [("float", "on")]
 
     def test_layer_rule(self, tmp_path: Path) -> None:
         path = _write_lua(
             tmp_path,
             "hl.layer_rule({ match = { namespace = '^waybar$' }, blur = true })",
         )
-        assert _keywords(load_lua(path), "layerrule") == ["blur on, match:namespace ^waybar$"]
+        rules = _rules(load_lua(path), "layerrule")
+        assert len(rules) == 1
+        assert rules[0].matchers == [("namespace", "^waybar$")]
+        assert rules[0].effects == [("blur", "on")]
+
+    def test_window_rule_with_name(self, tmp_path: Path) -> None:
+        # Regression test for hyprmod issue #37's Lua sibling case: a
+        # named Lua rule must land as ONE Rule node with name=Ahoj,
+        # not as multiple anonymous rules with ``name`` mis-parsed as
+        # an effect (the bug the synthetic-token detour used to mask).
+        path = _write_lua(
+            tmp_path,
+            "hl.window_rule({ name = 'Ahoj', match = { class = '^kitty$' }, float = true })",
+        )
+        rules = _rules(load_lua(path), "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "Ahoj"
+        assert rules[0].effects == [("float", "on")]
+
+    def test_window_rule_disabled(self, tmp_path: Path) -> None:
+        path = _write_lua(
+            tmp_path,
+            "hl.window_rule({ name = 'Off', enabled = false, match = { class = '^x$' }, "
+            "float = true })",
+        )
+        rules = _rules(load_lua(path), "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "Off"
+        assert rules[0].enabled is False
 
 
 class TestBindCalls:

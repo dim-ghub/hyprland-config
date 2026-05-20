@@ -505,3 +505,180 @@ class TestMigrateV055:
         doc = parse_string("dwindle {\n    pseudotile = 1\n}\n")
         migrate(doc, to_version="0.54")
         assert "pseudotile = 1" in serialize_hyprlang(doc)
+
+
+def _rules_of_kind(doc, kind: str):
+    from hyprland_config import Rule
+
+    return [ln for ln in doc.lines if isinstance(ln, Rule) and ln.kind == kind]
+
+
+class TestNormalizeRules:
+    """Both authored shapes (single-line ``windowrule = …`` and block
+    ``windowrule { … }``) canonicalise into structured :class:`Rule`
+    nodes after ``migrate()`` runs.
+    """
+
+    def test_block_form_named_windowrule(self):
+        # The exact shape from hyprmod issue #37.
+        doc = parse_string(
+            "windowrule {\n"
+            "    name = apply-something\n"
+            "    match:class = my-window\n"
+            "    border_size = 10\n"
+            "}\n"
+        )
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "apply-something"
+        assert rules[0].enabled is True
+        assert rules[0].matchers == [("class", "my-window")]
+        assert rules[0].effects == [("border_size", "10")]
+
+    def test_section_key_form_carries_name(self):
+        # ``windowrule[my-name] { … }`` puts the name in the section key.
+        doc = parse_string("windowrule[my-name] {\n    match:class = kitty\n    float = on\n}\n")
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "my-name"
+        assert rules[0].effects == [("float", "on")]
+
+    def test_explicit_name_overrides_section_key(self):
+        doc = parse_string(
+            "windowrule[from-key] {\n"
+            "    name = from-assignment\n"
+            "    match:class = X\n"
+            "    float = on\n"
+            "}\n"
+        )
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert rules[0].name == "from-assignment"
+
+    def test_block_with_multiple_effects(self):
+        doc = parse_string(
+            "windowrule {\n"
+            "    name = bundle\n"
+            "    match:class = kitty\n"
+            "    border_size = 5\n"
+            "    no_blur = on\n"
+            "    opacity = 0.9\n"
+            "}\n"
+        )
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "bundle"
+        assert [e[0] for e in rules[0].effects] == ["border_size", "no_blur", "opacity"]
+
+    def test_disabled_block_rule(self):
+        doc = parse_string(
+            "windowrule {\n"
+            "    name = off-by-default\n"
+            "    enable = 0\n"
+            "    match:class = X\n"
+            "    float = on\n"
+            "}\n"
+        )
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert rules[0].name == "off-by-default"
+        assert rules[0].enabled is False
+
+    def test_anonymous_block(self):
+        doc = parse_string("windowrule {\n    match:class = X\n    float = on\n}\n")
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == ""
+        assert rules[0].effects == [("float", "on")]
+
+    def test_layerrule_block(self):
+        doc = parse_string(
+            "layerrule {\n"
+            "    name = no-anim-selection\n"
+            "    match:namespace = selection\n"
+            "    no_anim = on\n"
+            "}\n"
+        )
+        migrate(doc)
+        rules = _rules_of_kind(doc, "layerrule")
+        assert len(rules) == 1
+        assert rules[0].name == "no-anim-selection"
+        assert rules[0].matchers == [("namespace", "selection")]
+        assert rules[0].effects == [("no_anim", "on")]
+
+    def test_block_with_no_effects_preserved(self):
+        # Hyprland rejects effectless rules; preserving the block
+        # verbatim is safer than synthesising a half-rule and lets
+        # tooling display the user's content as-is.
+        from hyprland_config import Rule
+
+        doc = parse_string("windowrule {\n    name = empty\n    match:class = X\n}\n")
+        migrate(doc)
+        assert not any(isinstance(ln, Rule) for ln in doc.lines)
+        assert "windowrule {" in serialize_hyprlang(doc)
+
+    def test_unclosed_block_preserved(self):
+        from hyprland_config import Rule
+
+        doc = parse_string(
+            "windowrule {\n    name = X\n    match:class = Y\n    float = on\n",
+            lenient=True,
+        )
+        migrate(doc)
+        # No Rule node emitted; original SectionOpen preserved.
+        assert not any(isinstance(ln, Rule) for ln in doc.lines)
+
+    def test_single_line_keyword_becomes_rule(self):
+        # The compact ``windowrule = …`` form normalises too — the
+        # only difference vs. block form is that it can't carry a
+        # name or enable flag.
+        doc = parse_string("windowrule = match:class kitty, float on\n")
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == ""
+        assert rules[0].matchers == [("class", "kitty")]
+        assert rules[0].effects == [("float", "on")]
+
+    def test_single_line_multi_effect_stays_bundled(self):
+        # An anonymous multi-effect single-line stays as ONE Rule with
+        # multiple effects — splitting was a hyprmod-specific workaround
+        # that no longer applies once Rule supports multiple effects.
+        doc = parse_string("windowrule = match:class kitty, opacity 0.8, no_blur on\n")
+        migrate(doc)
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert [e[0] for e in rules[0].effects] == ["opacity", "no_blur"]
+
+    def test_normalize_runs_when_from_version_is_above_055(self):
+        # Rule normalisation isn't a deprecation — it runs unconditionally.
+        doc = parse_string(
+            "windowrule {\n    name = future-proof\n    match:class = X\n    float = on\n}\n"
+        )
+        migrate(doc, from_version="0.60")
+        rules = _rules_of_kind(doc, "windowrule")
+        assert len(rules) == 1
+        assert rules[0].name == "future-proof"
+
+    def test_normalize_recurses_into_sourced_documents(self, tmp_path):
+        sourced = tmp_path / "rules.conf"
+        sourced.write_text(
+            "windowrule {\n    name = from-source\n    match:class = X\n    float = on\n}\n"
+        )
+        root = tmp_path / "hyprland.conf"
+        root.write_text(f"source = {sourced}\n")
+        doc = parse_file(root, follow_sources=True)
+        migrate(doc, recursive=True)
+        from hyprland_config import Source
+
+        for ln in doc.lines:
+            if isinstance(ln, Source):
+                sub = ln.documents[0]
+                rules = _rules_of_kind(sub, "windowrule")
+                assert len(rules) == 1
+                assert rules[0].name == "from-source"
+                break

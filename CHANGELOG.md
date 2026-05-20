@@ -5,6 +5,18 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-20
+
+### Added
+
+- `Rule` line node for `windowrule` / `layerrule` entries. Both authored shapes — single-line `windowrule = match:K V, EFFECT ARGS` and block-form `windowrule { name = …; match:K = V; … }` — canonicalise into one structured node with `kind`, `name`, `enabled`, `matchers`, and `effects` fields after `migrate()` runs. `load_lua()` builds `Rule` nodes directly from `hl.window_rule(...)` / `hl.layer_rule(...)` tables, so consumers iterate structured fields instead of re-parsing stringly-typed bodies
+- `render_rule_hyprlang()` / `render_rule_lua()` to render a single `Rule` to either output format. Hyprlang picks block-form vs. single-line based on whether `name` / `enabled` / multi-effect demand it; Lua always emits one `hl.window_rule({...})` / `hl.layer_rule({...})` call
+
+### Fixed
+
+- `hl.window_rule({ name = "X", … })` (Lua) no longer mis-renders the `name` field as a rule effect — named rules round-trip through `load_lua()` → `serialize_lua()` intact. https://github.com/BlueManCZ/hyprmod/issues/37
+- Block-form `windowrule { match:class = … }` now parses with the correct full key (`windowrule:match:class`); previously the section prefix was silently dropped for keys containing a colon, breaking downstream lookups and round-tripping
+
 ## [0.6.6] - 2026-05-18
 
 ### Fixed
@@ -228,6 +240,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.7.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.7.0
 [0.6.6]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.6
 [0.6.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.5
 [0.6.4]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.4

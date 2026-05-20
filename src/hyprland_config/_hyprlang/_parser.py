@@ -221,7 +221,7 @@ def _parse_line(
     m = _KEY_VALUE_RE.match(stripped)
     if m:
         key = m.group(1)
-        if section_stack and ":" not in key:
+        if section_stack:
             full_key = ":".join(section_stack + [key])
         else:
             full_key = key

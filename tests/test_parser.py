@@ -207,6 +207,17 @@ class TestClassification:
         assert isinstance(assignment, Assignment)
         assert assignment.full_key == "decoration:shadow:range"
 
+    def test_section_assignment_with_colon_in_key(self):
+        """Keys with a built-in colon (``match:class``) still get the section
+        prefix so block-form rules like ``windowrule { match:class = X }``
+        resolve to the correct full_key.
+        """
+        doc = parse_string("windowrule {\n    match:class = my-window\n}\n")
+        assignment = doc.lines[1]
+        assert isinstance(assignment, Assignment)
+        assert assignment.key == "match:class"
+        assert assignment.full_key == "windowrule:match:class"
+
     def test_bind_keyword(self):
         doc = parse_string("bind = SUPER, Q, killactive,\n")
         node = doc.lines[0]

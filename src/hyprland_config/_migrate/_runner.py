@@ -270,9 +270,21 @@ def migrate(
 ) -> MigrationResult:
     """Apply known migration transforms to a document.
 
-    Transforms are applied in version order.  Only migrations whose
-    ``from_version`` falls within the ``[from_version, to_version)`` range
-    are executed.
+    Version-gated transforms are applied in version order.  Only
+    migrations whose ``from_version`` falls within the
+    ``[from_version, to_version)`` range are executed.
+
+    After all version-gated migrations have rewritten any deprecated
+    string syntax (v1 → v2 → v3 etc.), windowrule / layerrule lines —
+    whether authored as block-form (``windowrule { name = …; …}``) or
+    as single-line keywords (``windowrule = match:K V, EFFECT ARGS``)
+    — are canonicalised into structured :class:`Rule` nodes so
+    downstream consumers iterate the fields directly instead of
+    re-parsing stringly-typed bodies. This normalisation runs
+    unconditionally and isn't reported in the :class:`MigrationResult`.
+    The post-pass order matters: version migrations rewrite Keyword
+    values in place, so they need to see Keyword nodes; normalising
+    first would steal their inputs.
 
     Parameters
     ----------
@@ -293,6 +305,8 @@ def migrate(
     MigrationResult:
         Lists of applied and skipped migration descriptions.
     """
+    from hyprland_config._migrate._windowrule import normalize_rules
+
     result = MigrationResult()
     from_ver = parse_version(from_version) if from_version is not None else None
     to_ver = parse_version(to_version) if to_version is not None else None
@@ -310,5 +324,8 @@ def migrate(
             result.applied.append(m.description)
         else:
             result.skipped.append(m.description)
+
+    for target_doc in doc.target_documents(recursive):
+        normalize_rules(target_doc)
 
     return result

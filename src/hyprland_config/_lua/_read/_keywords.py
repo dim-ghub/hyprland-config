@@ -9,7 +9,7 @@ wrote it.
 
 from typing import Any
 
-from hyprland_config._core._model import Assignment, Document, SectionClose, SectionOpen
+from hyprland_config._core._model import Assignment, Document, Rule, SectionClose, SectionOpen
 from hyprland_config._lua._read._config import format_number, scalar_to_hyprlang
 from hyprland_config._lua._workspace_fields import lua_field_to_hyprlang
 
@@ -66,40 +66,56 @@ def animation_value(t: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def rule_value(t: dict[str, Any]) -> str:
-    """Reassemble window/layer rule tables into modern v3 Hyprlang syntax.
+def rule_to_node(kind: str, t: dict[str, Any]) -> Rule:
+    """Build a structured :class:`Rule` node from an ``hl.window_rule``
+    or ``hl.layer_rule`` table.
 
-    Action and matcher keys are emitted in sorted order so the output is
-    independent of dict-insertion order (the wrapper preserves it from the
-    user's Lua, which is unstable across edits).
+    The Lua table mirrors the Rule shape one-to-one: ``name`` and
+    ``enabled`` map to the same-named fields; ``match`` becomes the
+    matcher list; every other key is an effect. Sorted iteration over
+    the effect/matcher keys keeps emission deterministic — the Lua
+    wrapper preserves user authoring order, but that's unstable across
+    edits, so sorting on the way back to a Document means downstream
+    diffs reflect semantic changes only.
     """
-    match = t.get("match") if isinstance(t.get("match"), dict) else None
-    action_parts: list[str] = []
+    name_value = t.get("name")
+    name = name_value.strip() if isinstance(name_value, str) else ""
+    enabled = t.get("enabled") is not False
+
+    matchers: list[tuple[str, str]] = []
+    if isinstance(t.get("match"), dict):
+        for mkey in sorted(t["match"]):
+            matchers.append((mkey, scalar_to_hyprlang(t["match"][mkey])))
+
+    effects: list[tuple[str, str]] = []
     for key in sorted(t):
-        if key == "match":
+        if key in ("match", "name", "enabled"):
             continue
-        rendered = _render_rule_action(key, t[key])
-        if rendered is not None:
-            action_parts.append(rendered)
+        effects.append((key, _effect_args_from_lua(t[key])))
 
-    tokens: list[str] = action_parts
-    if match:
-        for mkey in sorted(match):
-            mvalue = match[mkey]
-            tokens.append(f"match:{mkey} {scalar_to_hyprlang(mvalue)}")
-    return ", ".join(tokens)
+    return Rule(
+        raw="",
+        kind=kind,
+        name=name,
+        enabled=enabled,
+        matchers=matchers,
+        effects=effects,
+    )
 
 
-def _render_rule_action(name: str, value: Any) -> str | None:
-    # Hyprland 0.53+ rejects bare boolean effects — ``float`` alone fails,
-    # ``float on`` succeeds. Always emit the explicit token (see
-    # ``_V3_BOOL_EFFECTS`` in ``_migrate.py`` for the same constraint going
-    # the other way).
+def _effect_args_from_lua(value: Any) -> str:
+    """Translate a Lua-side effect value to its Hyprlang args string.
+
+    Bool effects in Lua are ``true``/``false``; Hyprland 0.53+ requires
+    the explicit ``on``/``off`` token so the Hyprlang serializer can
+    round-trip without losing the value. Numbers and strings pass
+    through :func:`scalar_to_hyprlang` unchanged.
+    """
     if value is True:
-        return f"{name} on"
+        return "on"
     if value is False:
-        return f"{name} off"
-    return f"{name} {scalar_to_hyprlang(value)}"
+        return "off"
+    return scalar_to_hyprlang(value)
 
 
 def workspace_value(t: dict[str, Any]) -> str:

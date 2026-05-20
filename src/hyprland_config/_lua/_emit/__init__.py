@@ -20,7 +20,12 @@ from hyprland_config._lua._emit._public import (
     emit_keyword_line,
     emit_option_assignment,
 )
-from hyprland_config._lua._emit._walker import LuaFile, serialize_lua, serialize_lua_tree
+from hyprland_config._lua._emit._walker import (
+    LuaFile,
+    render_rule_lua,
+    serialize_lua,
+    serialize_lua_tree,
+)
 
 __all__ = [
     "LuaFile",
@@ -28,6 +33,7 @@ __all__ = [
     "dispatch_to_lua",
     "emit_keyword_line",
     "emit_option_assignment",
+    "render_rule_lua",
     "serialize_lua",
     "serialize_lua_tree",
 ]

@@ -3,11 +3,24 @@
 This module is split out from :mod:`._runner` because the v2→v3
 migration alone is several hundred lines of regex- and string-shape
 gymnastics. Public surface is the two transform functions that
-:mod:`._runner` registers in its ``_MIGRATIONS`` list.
+:mod:`._runner` registers in its ``_MIGRATIONS`` list, plus
+:func:`normalize_rules` which canonicalises window/layer rule lines
+into structured :class:`Rule` nodes regardless of source shape
+(single-line ``windowrule = …`` or block-form ``windowrule { … }``).
 """
 
-from hyprland_config._core._model import Document, KeyValueLine
+from hyprland_config._core._model import (
+    Assignment,
+    Document,
+    KeyValueLine,
+    Keyword,
+    Line,
+    Rule,
+    SectionClose,
+    SectionOpen,
+)
 from hyprland_config._core._rules import V3_BOOL_EFFECTS
+from hyprland_config._core._split import split_top_level
 from hyprland_config._migrate._runner import _transform_lines
 
 _V2_PREFIXES = ("title:", "class:", "xwayland:", "floating:", "fullscreen:")
@@ -277,3 +290,222 @@ def migrate_windowrule_v1_to_v2(doc: Document) -> bool:
         line.update_raw()
 
     return _transform_lines(doc, predicate, transform)
+
+
+# ---------------------------------------------------------------------------
+# Structured Rule normalisation
+# ---------------------------------------------------------------------------
+#
+# Hyprland accepts windowrule / layerrule in two source shapes:
+#
+#     windowrule = match:class ^(firefox)$, float on            # single-line
+#
+#     windowrule {                                              # block form
+#         name        = my-rule
+#         match:class = ^(firefox)$
+#         border_size = 10
+#         no_blur     = on
+#     }
+#
+# Both are recognised by Hyprland (the latter via the ``addSpecialCategory``
+# registration in ConfigManager.cpp keyed on ``name``). Block form is the
+# only way to express a named or disabled rule and the only way to bundle
+# multiple effects under one logical entry.
+#
+# This normaliser collapses both shapes into a single :class:`Rule` node so
+# downstream consumers (hyprmod, the Lua emitter) iterate structured fields
+# (name, enabled, matchers, effects) instead of re-parsing strings. The
+# language-specific serializers in :mod:`hyprland_config._hyprlang._serializer`
+# and :mod:`hyprland_config._lua._emit` render Rule back to whichever shape
+# fits — Hyprlang picks block-form when name/disabled/multi-effect demand it,
+# Lua always emits ``hl.window_rule({ … })`` / ``hl.layer_rule({ … })``.
+
+_RULE_KEYWORDS = frozenset({"windowrule", "layerrule"})
+
+
+def _section_close_index(lines: list[Line], start: int) -> int | None:
+    """Return the index of the SectionClose matching ``lines[start]``
+    (a SectionOpen), tracking nested opens. ``None`` if the document is
+    malformed (unclosed block at EOF).
+    """
+    depth = 1
+    for i in range(start + 1, len(lines)):
+        node = lines[i]
+        if isinstance(node, SectionOpen):
+            depth += 1
+        elif isinstance(node, SectionClose):
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _collect_block_fields(
+    body: list[Line],
+) -> tuple[str | None, list[tuple[str, str]], list[tuple[str, str]], bool]:
+    """Extract (name, matchers, effects, enabled) from a block body."""
+    name: str | None = None
+    enabled = True
+    matchers: list[tuple[str, str]] = []
+    effects: list[tuple[str, str]] = []
+    for node in body:
+        if not isinstance(node, Assignment):
+            continue
+        key = node.key.strip()
+        value = node.value.strip()
+        if key == "name":
+            name = value
+        elif key == "enable":
+            enabled = value.lower() not in ("0", "false", "off", "no")
+        elif key.startswith("match:"):
+            matchers.append((key[len("match:") :].strip(), value))
+        elif key:
+            effects.append((key, value))
+    return name, matchers, effects, enabled
+
+
+def _parse_single_line_body(
+    body: str,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Tokenise a v3 single-line rule body into (matchers, effects).
+
+    Single-line rules carry no name or enable flag — Hyprland's
+    handler rejects those tokens — so this returns only the matcher
+    and effect pairs. Bool effects without an explicit value (``float``
+    on its own) get ``"on"`` filled in to match Hyprland 0.53+ requirements.
+    """
+    matchers: list[tuple[str, str]] = []
+    effects: list[tuple[str, str]] = []
+    for token in split_top_level(body):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("match:"):
+            rest = stripped[len("match:") :]
+            key, _, value = rest.partition(" ")
+            matchers.append((key.strip(), value.strip()))
+            continue
+        name, _, args = stripped.partition(" ")
+        name = name.strip()
+        args = args.strip()
+        if not name:
+            continue
+        if not args and name in V3_BOOL_EFFECTS:
+            args = "on"
+        effects.append((name, args))
+    return matchers, effects
+
+
+def _rule_from_keyword(kw: Keyword) -> Rule | None:
+    """Build a Rule from a single-line ``windowrule = …`` / ``layerrule = …``
+    Keyword. Returns ``None`` when:
+
+    - the body has no effects (Hyprland rejects effectless rules), or
+    - the body has no ``match:`` token (legacy v1 / malformed v2 input
+      that the version migrations declined to touch — leaving the Keyword
+      verbatim is safer than guessing what the author meant).
+
+    Preserving the original Keyword in those cases means downstream
+    tooling can still surface the line as-is.
+    """
+    if "match:" not in kw.value:
+        return None
+    matchers, effects = _parse_single_line_body(kw.value)
+    if not effects:
+        return None
+    return Rule(
+        raw=kw.raw,
+        lineno=kw.lineno,
+        source_name=kw.source_name,
+        kind=kw.key,
+        matchers=matchers,
+        effects=effects,
+    )
+
+
+def _rule_from_block(
+    section_open: SectionOpen,
+    body: list[Line],
+) -> Rule | None:
+    """Build a Rule from a ``windowrule { … }`` / ``layerrule { … }`` block.
+
+    Falls back to ``None`` when the block has no effects — same reasoning
+    as :func:`_rule_from_keyword`, plus the original SectionOpen/Assign/
+    SectionClose triplet is preserved verbatim by the caller so user-
+    authored content isn't silently dropped.
+    """
+    name, matchers, effects, enabled = _collect_block_fields(body)
+    if name is None and section_open.section_key:
+        # ``windowrule[my-name] { … }`` form: section key carries the name.
+        name = section_open.section_key
+    if not effects:
+        return None
+    return Rule(
+        raw=section_open.raw,
+        lineno=section_open.lineno,
+        source_name=section_open.source_name,
+        kind=section_open.name,
+        name=name or "",
+        enabled=enabled,
+        matchers=matchers,
+        effects=effects,
+    )
+
+
+def normalize_rules(doc: Document) -> bool:
+    """Canonicalise windowrule / layerrule lines into :class:`Rule` nodes.
+
+    Both authored shapes — single-line ``windowrule = match:K V, EFFECT
+    ARGS`` and the block form ``windowrule { name = …; match:K = V; …}``
+    — collapse to a single Rule per logical entry. Downstream consumers
+    work with the structured fields instead of re-parsing the value
+    string, and the language-specific serializers pick the right output
+    shape (block vs. single-line in Hyprlang, ``hl.window_rule({…})`` in
+    Lua) based on the Rule's contents.
+
+    Operates on a single document; the :func:`migrate` runner walks
+    sourced sub-documents itself. Returns True if any node was rewritten.
+    """
+    new_lines: list[Line] = []
+    changed = False
+    i = 0
+    while i < len(doc.lines):
+        node = doc.lines[i]
+
+        if isinstance(node, SectionOpen) and node.name in _RULE_KEYWORDS:
+            close_idx = _section_close_index(doc.lines, i)
+            if close_idx is None:
+                # Malformed (unclosed at EOF) — preserve verbatim for
+                # lenient callers to surface as-is.
+                new_lines.append(node)
+                i += 1
+                continue
+            body = doc.lines[i + 1 : close_idx]
+            rule = _rule_from_block(node, body)
+            if rule is not None:
+                new_lines.append(rule)
+                changed = True
+            else:
+                # Effectless block — keep the original lines so user
+                # content isn't silently deleted.
+                new_lines.extend(doc.lines[i : close_idx + 1])
+            i = close_idx + 1
+            continue
+
+        if isinstance(node, Keyword) and node.key in _RULE_KEYWORDS:
+            rule = _rule_from_keyword(node)
+            if rule is not None:
+                new_lines.append(rule)
+                changed = True
+            else:
+                new_lines.append(node)
+            i += 1
+            continue
+
+        new_lines.append(node)
+        i += 1
+
+    if changed:
+        doc.lines = new_lines
+        doc.mark_dirty()
+    return changed

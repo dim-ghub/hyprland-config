@@ -35,6 +35,7 @@ from hyprland_config._core import (
     KeyValueLine,
     Keyword,
     Line,
+    Rule,
     SectionClose,
     SectionOpen,
     Source,
@@ -57,6 +58,7 @@ from hyprland_config._hyprlang import (
     parse_bind_line,
     parse_file,
     parse_string,
+    render_rule_hyprlang,
     serialize_hyprlang,
 )
 from hyprland_config._lua import (
@@ -67,6 +69,7 @@ from hyprland_config._lua import (
     emit_keyword_line,
     emit_option_assignment,
     load_lua,
+    render_rule_lua,
     serialize_lua,
     serialize_lua_tree,
 )
@@ -245,6 +248,7 @@ __all__ = [
     "LuaReaderError",
     "MigrationResult",
     "ParseError",
+    "Rule",
     "SectionClose",
     "SectionOpen",
     "Source",
@@ -281,6 +285,8 @@ __all__ = [
     "parse_to_dict",
     "parse_version",
     "serialize_any",
+    "render_rule_hyprlang",
+    "render_rule_lua",
     "serialize_hyprlang",
     "serialize_lua",
     "serialize_lua_tree",

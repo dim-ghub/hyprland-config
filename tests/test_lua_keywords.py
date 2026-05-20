@@ -126,6 +126,59 @@ class TestLayerRule:
         assert "blur = true" in out
 
 
+class TestNamedRuleLuaEmission:
+    """Block-form named rules round-trip through migration + Lua emission.
+
+    After ``flatten_rule_blocks`` collapses a block to a synthetic
+    single-line keyword, the line-style Lua emitter must recognise
+    ``name:`` / ``enable:`` tokens and bundle the multiple effects
+    into one ``hl.window_rule({...})`` / ``hl.layer_rule({...})`` call.
+    """
+
+    def test_named_window_block_emits_single_lua_call(self) -> None:
+        out = serialize_lua(
+            parse_string(
+                "windowrule {\n"
+                "    name = apply-something\n"
+                "    match:class = my-window\n"
+                "    border_size = 10\n"
+                "    no_blur = on\n"
+                "}\n"
+            )
+        )
+        # One window_rule call carrying name + bundled effects.
+        assert out.count("hl.window_rule(") == 1
+        assert 'name = "apply-something"' in out
+        assert 'class = "my-window"' in out
+        assert "border_size = 10" in out
+        assert "no_blur = true" in out
+
+    def test_named_layer_block_emits_single_lua_call(self) -> None:
+        out = serialize_lua(
+            parse_string(
+                "layerrule {\n"
+                "    name = bundle\n"
+                "    match:namespace = waybar\n"
+                "    blur = on\n"
+                "    ignore_alpha = 0.5\n"
+                "}\n"
+            )
+        )
+        assert out.count("hl.layer_rule(") == 1
+        assert 'name = "bundle"' in out
+        assert 'namespace = "waybar"' in out
+        assert "blur = true" in out
+        assert "ignore_alpha = 0.5" in out
+
+    def test_section_key_form_also_emits_name(self) -> None:
+        # ``windowrule[my-name] { … }`` carries the name in the section key.
+        out = serialize_lua(
+            parse_string("windowrule[from-key] {\n    match:class = kitty\n    float = on\n}\n")
+        )
+        assert 'name = "from-key"' in out
+        assert "float = true" in out
+
+
 class TestWorkspaceRule:
     def test_basic(self) -> None:
         out = serialize_lua(parse_string("workspace = 1, monitor:DP-1, default:true\n"))
