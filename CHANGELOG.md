@@ -5,6 +5,13 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-20
+
+### Fixed
+
+- Hyprlang `$var` references in assignments, binds, and rules now survive Lua migration as named `local var_NAME` declarations instead of being inlined or surfacing as the literal string `"$var"` (which Hyprland rejected at reload — noctalia-colors). https://github.com/BlueManCZ/hyprmod/issues/38
+- Block-form `windowrule { enable = 0; … }` emits Lua `enabled = false` instead of `enable = 0`
+
 ## [0.7.0] - 2026-05-20
 
 ### Added
@@ -240,6 +247,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.8.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.8.0
 [0.7.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.7.0
 [0.6.6]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.6
 [0.6.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.5

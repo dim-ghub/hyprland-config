@@ -92,6 +92,65 @@ def expand_value(text: str, variables: dict[str, str]) -> str:
     return result
 
 
+def substitute_variables_with_markers(
+    text: str,
+    variables: dict[str, str],
+    referenced: dict[str, str],
+    open_marker: str,
+    close_marker: str,
+) -> str:
+    """Replace ``$var`` references with ``OPEN<name>CLOSE`` placeholder tokens.
+
+    Records each substituted variable in *referenced* (name → value) so the
+    caller can emit matching ``local`` declarations elsewhere. Variable
+    *values* are scanned recursively in post-order: ``$accent = $primary``
+    registers ``primary`` *before* ``accent`` so the caller's preamble
+    declares ``local var_primary`` ahead of ``local var_accent`` — Lua
+    evaluates each local's RHS at declaration time, so a dependency
+    declared later would resolve to ``nil``. Variables whose name isn't
+    in *variables* survive as ``$name`` literals — same fall-through
+    behaviour as :func:`expand_value` so unknown references don't
+    disappear silently.
+
+    Used by the Lua emitter to keep variable references symbolic across
+    the assignment / bind / keyword pipelines (see
+    :func:`hyprland_config._lua._emit._format.to_lua_expr`).
+    """
+    if "$" not in text:
+        return text
+    sorted_names = sorted(variables, key=len, reverse=True)
+    in_progress: set[str] = set()
+
+    def register(name: str) -> None:
+        # in_progress breaks cycles ($a → $b → $a) — one of the two ends
+        # up registered without its peer available, which is the best
+        # Lua can do anyway.
+        if name in referenced or name not in variables or name in in_progress:
+            return
+        in_progress.add(name)
+        value = variables[name]
+        if "$" in value:
+            for ref_name in sorted_names:
+                if f"${ref_name}" in value:
+                    register(ref_name)
+        referenced[name] = value
+        in_progress.discard(name)
+
+    def substitute(s: str) -> str:
+        out = s
+        for name in sorted_names:
+            token = f"${name}"
+            if token in out:
+                register(name)
+                out = out.replace(token, f"{open_marker}{name}{close_marker}")
+        return out
+
+    result = substitute(text)
+    if "{{" in result or "\\" in result:
+        result = expand_expressions(result)
+    return result
+
+
 def expand_expressions(text: str) -> str:
     """Replace all ``{{expr}}`` in text with their evaluated results.
 

@@ -8,15 +8,115 @@ shell-out translation.
 
 import re
 import shlex
+from dataclasses import dataclass
 from typing import Any
 
-from hyprland_config._core._types import Gradient
+from hyprland_config._core._expr import substitute_variables_with_markers
+from hyprland_config._core._types import Color, Gradient
 
 INDENT = "    "
 
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Control-char delimiters wrap a Hyprlang variable name (``$mainMod`` →
+# ``\x01mainMod\x02``) so the reference survives the assignment / bind /
+# rule pipelines as an opaque token. ``coerce_value`` and ``quote_string``
+# spot the marker and emit a ``LuaExpr`` instead of a quoted string, which
+# lets the assembled output reference a Lua local (``var_mainMod``) rather
+# than inlining the value. SOH/STX never appear in legitimate Hyprlang.
+VAR_MARKER_OPEN = "\x01"
+VAR_MARKER_CLOSE = "\x02"
+LUA_VAR_PREFIX = "var_"
+
+_NON_IDENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+@dataclass(frozen=True, slots=True)
+class LuaExpr:
+    """A pre-rendered Lua expression that bypasses string quoting.
+
+    Returned by :func:`coerce_value` / :func:`quote_string` when their input
+    carries variable markers — the assembled source already references the
+    appropriate ``var_*`` locals, so wrapping it in quotes would turn the
+    code back into the literal string we're trying to avoid.
+    """
+
+    source: str
+
+
+def expand_value_lua(text: str, variables: dict[str, str], referenced: dict[str, str]) -> str:
+    """Expand ``$var`` references in *text* into marker-wrapped tokens.
+
+    Wrapper over :func:`substitute_variables_with_markers` that knows
+    this module's marker bytes. Use this — not ``Document.expand`` — in
+    the Lua emitter when you want variable references to survive as
+    Lua locals rather than be inlined.
+    """
+    return substitute_variables_with_markers(
+        text, variables, referenced, VAR_MARKER_OPEN, VAR_MARKER_CLOSE
+    )
+
+
+def lua_var_name(hyprlang_name: str) -> str:
+    """Map a Hyprlang variable name to a safe Lua identifier.
+
+    Always prefixed with ``var_`` so reserved Lua keywords (``$end``,
+    ``$function``) and leading-digit names (``$1mod``) produce valid
+    identifiers without a per-name escape table. Non-alphanumeric chars
+    (Hyprlang allows hyphens) collapse to underscore.
+    """
+    safe = _NON_IDENT_RE.sub("_", hyprlang_name)
+    return f"{LUA_VAR_PREFIX}{safe}"
+
+
+def has_var_marker(s: str) -> bool:
+    return VAR_MARKER_OPEN in s
+
+
+def _split_marker_string(s: str) -> list[tuple[str, str]]:
+    """Tokenise *s* into (kind, value) pairs where kind is 'var' or 'lit'."""
+    parts: list[tuple[str, str]] = []
+    i = 0
+    while i < len(s):
+        if s[i] == VAR_MARKER_OPEN:
+            end = s.find(VAR_MARKER_CLOSE, i + 1)
+            if end == -1:
+                # Malformed — treat the rest as literal so we never
+                # silently drop user content.
+                parts.append(("lit", s[i:]))
+                break
+            parts.append(("var", s[i + 1 : end]))
+            i = end + 1
+        else:
+            next_marker = s.find(VAR_MARKER_OPEN, i)
+            if next_marker == -1:
+                parts.append(("lit", s[i:]))
+                break
+            parts.append(("lit", s[i:next_marker]))
+            i = next_marker
+    return parts
+
+
+def to_lua_expr(s: str) -> LuaExpr:
+    """Convert a marker-bearing string into a Lua expression.
+
+    A single ``$name`` reference (no surrounding text) renders as the bare
+    identifier ``var_name``. Mixed content (``$mainMod + SHIFT``) renders
+    as a Lua concatenation: ``var_mainMod .. " + SHIFT"``.
+    """
+    parts = _split_marker_string(s)
+    if len(parts) == 1:
+        kind, val = parts[0]
+        if kind == "var":
+            return LuaExpr(lua_var_name(val))
+        return LuaExpr(_quote_literal(val))
+    fragments = [lua_var_name(val) if kind == "var" else _quote_literal(val) for kind, val in parts]
+    # Drop empty literal chunks ("") that arise at marker boundaries.
+    fragments = [f for f in fragments if f != '""']
+    return LuaExpr(" .. ".join(fragments))
+
 
 # Hyprlang accepts these (case-insensitive) for boolean-typed options;
 # Hyprland's Lua API only accepts native Lua `true`/`false`, so we coerce.
@@ -129,6 +229,15 @@ def coerce_value(s: str) -> Any:
     - everything else (single colours, paths, vec2, free text) stays a string.
     """
     stripped = s.strip()
+    if has_var_marker(stripped):
+        # Multi-colour gradients still need the structured ``{colors=…,
+        # angle=…}`` shape — Hyprland's Lua API routes single-string
+        # values to a different code path. Variable references survive
+        # as ``LuaExpr`` entries inside the ``colors`` list.
+        gradient = _try_gradient_with_markers(stripped)
+        if gradient is not None:
+            return gradient
+        return to_lua_expr(stripped)
     if _INT_RE.match(stripped):
         return int(stripped)
     if _FLOAT_RE.match(stripped):
@@ -162,8 +271,49 @@ def _try_gradient(value: str) -> dict[str, Any] | None:
     return result
 
 
-def quote_string(s: str) -> str:
-    """Quote *s* as a Lua double-quoted string literal."""
+_GRADIENT_ANGLE_RE = re.compile(r"(-?\d+)\s*deg\s*$")
+
+
+def _try_gradient_with_markers(s: str) -> dict[str, Any] | None:
+    """Build a structured gradient table when at least one colour is a ``$var``.
+
+    Hyprland's Lua API wants gradients as ``{colors = {...}, angle = N}`` —
+    inlining a multi-colour value into a single string (``var_c1 .. " " ..
+    var_c2 .. " 45deg"``) would land in the wrong API path. Parsing the
+    angle and colour tokens by hand here keeps the structured shape while
+    letting variable references survive as ``LuaExpr`` entries inside the
+    ``colors`` list.
+
+    Returns ``None`` if the input doesn't look like a multi-colour gradient
+    or any non-variable token fails to parse as a colour — caller falls
+    back to plain :func:`to_lua_expr` so we never produce mangled output.
+    """
+    text = s
+    angle = 0
+    m = _GRADIENT_ANGLE_RE.search(text)
+    if m:
+        angle = int(m.group(1))
+        text = text[: m.start()].strip()
+    tokens = text.split()
+    if not tokens or (len(tokens) < 2 and angle == 0):
+        return None
+    colors: list[Any] = []
+    for tok in tokens:
+        if has_var_marker(tok):
+            colors.append(to_lua_expr(tok))
+        else:
+            try:
+                colors.append(Color.parse(tok).to_rgba())
+            except ValueError:
+                return None
+    result: dict[str, Any] = {"colors": colors}
+    if angle:
+        result["angle"] = angle
+    return result
+
+
+def _quote_literal(s: str) -> str:
+    """Quote *s* as a Lua string literal, no marker handling."""
     escaped = (
         s.replace("\\", "\\\\")
         .replace('"', '\\"')
@@ -172,6 +322,20 @@ def quote_string(s: str) -> str:
         .replace("\t", "\\t")
     )
     return f'"{escaped}"'
+
+
+def quote_string(s: str) -> str:
+    """Quote *s* as a Lua string, or render it as a Lua expression.
+
+    Returns a plain double-quoted literal for ordinary strings; if *s*
+    carries variable markers (see :data:`VAR_MARKER_OPEN`), returns the
+    rendered :class:`LuaExpr.source` instead so the caller drops a live
+    ``var_*`` reference (or concat chain) at the call site rather than
+    quoting the marker bytes verbatim.
+    """
+    if has_var_marker(s):
+        return to_lua_expr(s).source
+    return _quote_literal(s)
 
 
 def _format_key(k: str) -> str:
@@ -183,6 +347,8 @@ def _format_key(k: str) -> str:
 
 def format_value(value: Any, indent: int) -> str:
     """Render *value* as Lua source at the given indentation level."""
+    if isinstance(value, LuaExpr):
+        return value.source
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):

@@ -18,7 +18,9 @@ class TestExpressionTranslator:
         result = translate_expression("$GPU == nvidia")
         assert result is not None
         lua, refs = result
-        assert lua == 'GPU == "nvidia"'
+        # The LHS gets ``tostring(...)``-wrapped so the comparison works whether
+        # the preamble emitted ``var_GPU`` as a string, number, or bool.
+        assert lua == 'tostring(var_GPU) == "nvidia"'
         assert refs == {"GPU"}
 
     def test_string_equality_quoted_rhs(self):
@@ -26,14 +28,14 @@ class TestExpressionTranslator:
         assert result is not None
         lua, _ = result
         # Already-quoted RHS unwraps so the output isn't double-quoted.
-        assert lua == 'GPU == "nvidia"'
+        assert lua == 'tostring(var_GPU) == "nvidia"'
 
     def test_string_inequality(self):
         result = translate_expression("$GPU != nvidia")
         assert result is not None
         lua, _ = result
         # `!=` maps to Lua's `~=` operator.
-        assert lua == 'GPU ~= "nvidia"'
+        assert lua == 'tostring(var_GPU) ~= "nvidia"'
 
     def test_numeric_greater_than(self):
         result = translate_expression("$N > 5")
@@ -41,26 +43,26 @@ class TestExpressionTranslator:
         lua, refs = result
         # Numeric ops wrap LHS in tonumber() because Hyprlang variables are
         # always strings — `"3" > 5` is a Lua type error otherwise.
-        assert lua == "tonumber(N) > 5"
+        assert lua == "tonumber(var_N) > 5"
         assert refs == {"N"}
 
     def test_numeric_less_than_equal(self):
         result = translate_expression("$N <= 10")
         assert result is not None
         lua, _ = result
-        assert lua == "tonumber(N) <= 10"
+        assert lua == "tonumber(var_N) <= 10"
 
     def test_numeric_float_rhs(self):
         result = translate_expression("$RATIO >= 1.5")
         assert result is not None
         lua, _ = result
-        assert lua == "tonumber(RATIO) >= 1.5"
+        assert lua == "tonumber(var_RATIO) >= 1.5"
 
     def test_numeric_negative_rhs(self):
         result = translate_expression("$OFFSET > -100")
         assert result is not None
         lua, _ = result
-        assert lua == "tonumber(OFFSET) > -100"
+        assert lua == "tonumber(var_OFFSET) > -100"
 
     def test_bare_var_truthy_check(self):
         result = translate_expression("$GAPS")
@@ -69,11 +71,13 @@ class TestExpressionTranslator:
         # Hyprlang treats a bare variable as truthy when non-empty,
         # non-"0", non-"false"; the Lua approximation has to test all
         # three because Lua strings (including "0" and "false") are
-        # always truthy.
-        assert "GAPS ~= nil" in lua
-        assert 'GAPS ~= ""' in lua
-        assert 'GAPS ~= "0"' in lua
-        assert 'GAPS ~= "false"' in lua
+        # always truthy. The falsy checks ``tostring(...)``-wrap the local
+        # so numeric and bool locals from the typed preamble still trip
+        # the right patterns.
+        assert "var_GAPS ~= nil" in lua
+        assert 'tostring(var_GAPS) ~= ""' in lua
+        assert 'tostring(var_GAPS) ~= "0"' in lua
+        assert 'tostring(var_GAPS) ~= "false"' in lua
         assert refs == {"GAPS"}
 
     def test_numeric_op_with_non_numeric_rhs_fails(self):
@@ -99,7 +103,7 @@ class TestExpressionTranslator:
         result = translate_expression('$PATH == "/home/user"')
         assert result is not None
         lua, _ = result
-        assert lua == 'PATH == "/home/user"'
+        assert lua == 'tostring(var_PATH) == "/home/user"'
 
 
 class TestBasicConditional:
@@ -110,8 +114,8 @@ class TestBasicConditional:
             "$GPU = nvidia\n# hyprlang if $GPU == nvidia\nenv = MY_GPU, nvidia\n# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'local GPU = "nvidia"' in out
-        assert 'if GPU == "nvidia" then' in out
+        assert 'local var_GPU = "nvidia"' in out
+        assert 'if tostring(var_GPU) == "nvidia" then' in out
         assert 'hl.env("MY_GPU", "nvidia")' in out
         assert "end" in out
 
@@ -125,7 +129,7 @@ class TestBasicConditional:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'if GPU == "nvidia" then' in out
+        assert 'if tostring(var_GPU) == "nvidia" then' in out
         assert 'hl.env("MY_GPU", "nvidia")' in out
         assert "else" in out
         assert 'hl.env("MY_GPU", "amd")' in out
@@ -145,15 +149,19 @@ class TestBasicConditional:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'if N == "1" then' in out
-        assert 'elseif N == "2" then' in out
-        assert 'elseif N == "3" then' in out
+        # ``$N = 2`` coerces to the Lua number 2 — ``tostring`` lets the
+        # string-equality compare succeed against the literal ``"1"`` etc.
+        assert "local var_N = 2" in out
+        assert 'if tostring(var_N) == "1" then' in out
+        assert 'elseif tostring(var_N) == "2" then' in out
+        assert 'elseif tostring(var_N) == "3" then' in out
         assert "else" in out
         # Every branch's body emits its own hl.env call (none merged).
         assert out.count("hl.env(") == 4
 
     def test_only_referenced_vars_in_preamble(self):
-        # $UNUSED never appears in a conditional → no `local UNUSED = …`.
+        # $UNUSED never appears in a conditional or assignment → no
+        # ``local var_UNUSED = …``.
         text = (
             "$GPU = nvidia\n"
             "$UNUSED = whatever\n"
@@ -162,13 +170,15 @@ class TestBasicConditional:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'local GPU = "nvidia"' in out
+        assert 'local var_GPU = "nvidia"' in out
         assert "UNUSED" not in out
 
-    def test_no_preamble_when_no_conditionals(self):
-        # Plain configs keep the existing inline-expansion behavior — no
-        # surprise locals showing up just because a variable is defined.
-        out = serialize_lua(parse_string("$M = SUPER\nbind = $M, A, exec, foo\n"))
+    def test_no_preamble_when_no_var_references(self):
+        # A variable that's defined but never referenced anywhere stays out
+        # of the preamble — matches Hyprlang, which silently ignores unused
+        # variables. (Previously this test asserted no preamble when no
+        # conditionals; now assignments and binds also pull variables in.)
+        out = serialize_lua(parse_string("$M = SUPER\nbind = SUPER, A, exec, foo\n"))
         assert "local " not in out
 
     def test_each_branch_emits_own_hl_config(self):
@@ -200,8 +210,8 @@ class TestNestedConditionals:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert "if tonumber(X) > 0 then" in out
-        assert "if tonumber(Y) > 0 then" in out
+        assert "if tonumber(var_X) > 0 then" in out
+        assert "if tonumber(var_Y) > 0 then" in out
         assert 'hl.env("BOTH", "on")' in out
         # Two `end` tokens, one per nested `if` — match on whole-word boundary
         # so the inner `end` (indented) and outer `end` (column 0) both count.
@@ -222,9 +232,9 @@ class TestNestedConditionals:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'if A == "1" then' in out
-        assert 'elseif A == "2" then' in out
-        assert "if tonumber(B) > 0 then" in out
+        assert 'if tostring(var_A) == "1" then' in out
+        assert 'elseif tostring(var_A) == "2" then' in out
+        assert "if tonumber(var_B) > 0 then" in out
         assert 'hl.env("NESTED", "yes")' in out
 
     def test_untranslatable_nested_does_not_block_outer(self):
@@ -242,7 +252,7 @@ class TestNestedConditionals:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'if A == "1" then' in out
+        assert 'if tostring(var_A) == "1" then' in out
         assert 'hl.env("OUTER", "on")' in out
         assert "TODO" in out
         assert "$A > 0 and $B > 0" in out
@@ -264,7 +274,7 @@ class TestConditionalWithMixedContent:
         assert "general =" in out
         assert "gaps_in = 5," in out
         # The conditional wrapper survives — body isn't unconditionally emitted.
-        assert "GAPS ~=" in out
+        assert "var_GAPS ~=" in out
         assert "end" in out
 
     def test_bind_inside_conditional(self):
@@ -275,13 +285,13 @@ class TestConditionalWithMixedContent:
             "# hyprlang endif\n"
         )
         out = serialize_lua(parse_string(text))
-        assert 'if MOD == "SUPER" then' in out
+        assert 'if tostring(var_MOD) == "SUPER" then' in out
         assert "hl.bind(" in out
 
     def test_exec_inside_conditional_wraps_hl_on(self):
         text = "$DESKTOP = 1\n# hyprlang if $DESKTOP == 1\nexec-once = waybar\n# hyprlang endif\n"
         out = serialize_lua(parse_string(text))
-        assert 'if DESKTOP == "1" then' in out
+        assert 'if tostring(var_DESKTOP) == "1" then' in out
         # The hl.on block ends up inside the conditional so the start-up
         # handler only registers when the condition fires.
         assert 'hl.on("hyprland.start"' in out

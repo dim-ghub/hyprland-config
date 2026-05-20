@@ -24,7 +24,7 @@ manual-conversion block — fail loudly instead of guessing.
 
 import re
 
-from hyprland_config._lua._emit._format import quote_string
+from hyprland_config._lua._emit._format import lua_var_name, quote_string
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 
@@ -64,19 +64,36 @@ def translate_expression(expr: str) -> tuple[str, set[str]] | None:
     m = _BINOP_RE.match(expr)
     if m:
         var_name, op, rhs_raw = m.group(1), m.group(2), m.group(3).strip()
+        local = lua_var_name(var_name)
         if op in _NUMERIC_OPS:
             rhs_num = _parse_number_literal(rhs_raw)
             if rhs_num is None:
                 return None
-            return (f"tonumber({var_name}) {op} {rhs_num}", {var_name})
+            return (f"tonumber({local}) {op} {rhs_num}", {var_name})
+        # The preamble emits variables with their natural type (numbers as
+        # numbers, bools as booleans). Hyprlang's ``$x == 1`` comparison is
+        # string-typed, so we ``tostring(...)`` the LHS to make the
+        # equality match whether the local turned out to be a string,
+        # number, or bool.
         lua_op = "~=" if op == "!=" else "=="
         rhs_lua = _quote_rhs(rhs_raw)
-        return (f"{var_name} {lua_op} {rhs_lua}", {var_name})
+        return (f"tostring({local}) {lua_op} {rhs_lua}", {var_name})
 
     m = _BARE_VAR_RE.match(expr)
     if m:
         name = m.group(1)
-        truthy = f'({name} ~= nil and {name} ~= "" and {name} ~= "0" and {name} ~= "false")'
+        local = lua_var_name(name)
+        # Hyprlang truthy: non-nil, non-empty, non-"0", non-"false". The
+        # ``~= nil`` check stays unwrapped so an undefined local (Lua nil)
+        # short-circuits to falsy — ``tostring(nil)`` is the string ``"nil"``,
+        # which would otherwise sneak past the falsy checks. The remaining
+        # checks go through ``tostring`` so numeric ``0`` and boolean
+        # ``false`` locals (from the typed preamble) coerce to their string
+        # forms and trip the same patterns Hyprlang uses.
+        truthy = (
+            f'({local} ~= nil and tostring({local}) ~= "" '
+            f'and tostring({local}) ~= "0" and tostring({local}) ~= "false")'
+        )
         return (truthy, {name})
 
     return None

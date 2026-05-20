@@ -70,7 +70,10 @@ from hyprland_config._lua._emit._format import (
     coerce_value,
     emit_exec_cmd_call,
     emit_keyword_config_call,
+    expand_value_lua,
     format_table,
+    format_value,
+    lua_var_name,
     parse_hyprctl_dispatch,
     parse_hyprctl_keyword,
     quote_string,
@@ -362,15 +365,34 @@ def _drain_open_conditionals(state: _EmitState) -> None:
 
 
 def _format_var_preamble(variables: dict[str, str]) -> str:
-    """Render ``local NAME = "value"`` lines for variables used in conditionals.
+    """Render ``local var_NAME = …`` lines for each referenced variable.
 
-    Values are emitted as Lua strings — Hyprlang treats every variable as
-    a string at storage time, and the conditional translator wraps numeric
-    comparisons in ``tonumber(...)`` so the local stays a string. Insertion
-    order is preserved so the preamble reads in the order the conditionals
-    discovered the references.
+    Values flow through the same :func:`coerce_value` / :func:`format_value`
+    pipeline the inline assignment path uses, so numeric literals emit as
+    Lua numbers (``local var_size = 10``), bool words as booleans
+    (``local var_enabled = true``), gradients as structured tables, and
+    everything else as quoted strings. Values that themselves contain
+    ``$other`` references re-expand through the marker pipeline so
+    ``$accent = $primary`` emits as ``local var_accent = var_primary``.
+    Transitive deps are already in *variables* (the walker registers them
+    at scan time).
+
+    Conditional comparisons compensate for the typed locals by wrapping
+    string-equality LHS in ``tostring(...)`` — see
+    :func:`hyprland_config._lua._emit._conditional.translate_expression`.
+    Numeric comparisons keep their pre-existing ``tonumber(...)`` wrap.
+
+    Insertion order is preserved; transitive deps surface after the
+    variable that referenced them. Lua tolerates this so long as no
+    declaration is read at *initialisation* time — locals are looked up
+    when the call site runs, not when the local is declared.
     """
-    lines = [f"local {name} = {quote_string(value)}" for name, value in variables.items()]
+    lines: list[str] = []
+    for name, value in variables.items():
+        own_refs: dict[str, str] = {}
+        rendered_value = expand_value_lua(value, variables, own_refs)
+        coerced = coerce_value(rendered_value)
+        lines.append(f"local {lua_var_name(name)} = {format_value(coerced, 0)}")
     return "\n".join(lines) + "\n"
 
 
@@ -493,15 +515,21 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
         return
 
     if isinstance(line, Assignment):
+        # Substitute ``$var`` references with marker tokens (and register
+        # them in ``state.referenced_vars`` for the preamble) so each
+        # reference survives downstream coercion as a ``LuaExpr`` pointing
+        # at a Lua local. Variables only resolve in their defining doc,
+        # so we use ``owning_doc.variables`` rather than the root's.
+        value = expand_value_lua(line.value, owning_doc.variables, state.referenced_vars)
         if state.section_stack:
             cur_name, cur_buf = state.section_stack[-1]
             if cur_name == "device" and cur_buf is not None:
-                cur_buf[line.key] = coerce_value(line.value)
+                cur_buf[line.key] = coerce_value(value)
                 return
             if cur_name in _BLOCK_RULE_SECTIONS and cur_buf is not None:
-                add_block_rule_field(cur_buf, line.key, line.value)
+                add_block_rule_field(cur_buf, line.key, value)
                 return
-        set_nested(state.current.config_tree, split_key(line.full_key), coerce_value(line.value))
+        set_nested(state.current.config_tree, split_key(line.full_key), coerce_value(value))
         return
 
     if isinstance(line, Keyword):
@@ -588,8 +616,10 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
     """Route a Keyword line to the right accumulator or fallback bucket."""
     name = line.key
     # Variables like ``$mainMod`` only resolve inside the document that
-    # defined them, so we use the owning doc's scope for expansion.
-    args = owning_doc.expand(line.value)
+    # defined them, so we use the owning doc's scope. Marker-substitute
+    # so ``$mainMod`` flows downstream as a token referencing the Lua
+    # local ``var_mainMod`` rather than the inlined value.
+    args = expand_value_lua(line.value, owning_doc.variables, state.referenced_vars)
 
     # ``submap = NAME`` opens a Hyprlang submap; the binds that follow until
     # the matching ``submap = reset`` belong to it. Lua's ``hl.define_submap``

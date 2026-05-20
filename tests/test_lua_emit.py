@@ -69,6 +69,182 @@ class TestCategoryAssignments:
         assert "gaps_in = 5," not in out
 
 
+class TestVariablePreservation:
+    """Hyprlang ``$var`` references survive the Lua migration as named
+    ``local var_NAME`` declarations, so the user keeps the same indirection
+    they had in the source. Previously variables were silently inlined (or,
+    worse, surfaced as the literal string ``"$var"`` — the noctalia-colors
+    bug that Hyprland rejected at reload).
+    """
+
+    def test_simple_variable_becomes_local(self) -> None:
+        out = serialize_lua(
+            parse_string("$primary = rgb(98a8b3)\ngeneral:col.active_border = $primary\n")
+        )
+        assert 'local var_primary = "rgb(98a8b3)"' in out
+        assert "active_border = var_primary," in out
+        # No literal string with the colour or a leftover ``$primary``.
+        assert '"rgb(98a8b3)"' in out  # only in the local declaration
+        assert out.count('"rgb(98a8b3)"') == 1
+        assert "$primary" not in out
+
+    def test_multiple_variables_share_preamble(self) -> None:
+        out = serialize_lua(
+            parse_string(
+                "$primary = rgb(98a8b3)\n"
+                "$surface = rgb(1c1f21)\n"
+                "general {\n"
+                "    col.active_border = $primary\n"
+                "    col.inactive_border = $surface\n"
+                "}\n"
+            )
+        )
+        assert 'local var_primary = "rgb(98a8b3)"' in out
+        assert 'local var_surface = "rgb(1c1f21)"' in out
+        assert "active_border = var_primary," in out
+        assert "inactive_border = var_surface," in out
+
+    def test_full_noctalia_colors_shape(self) -> None:
+        # The exact shape from issue #38 — definitions at top, references
+        # across general / group / groupbar sections.
+        out = serialize_lua(
+            parse_string(
+                "$primary = rgb(98a8b3)\n"
+                "$surface = rgb(1c1f21)\n"
+                "$secondary = rgb(8d97a5)\n"
+                "general {\n"
+                "    col.active_border = $primary\n"
+                "    col.inactive_border = $surface\n"
+                "}\n"
+                "group {\n"
+                "    col.border_active = $secondary\n"
+                "    col.border_inactive = $surface\n"
+                "    groupbar {\n"
+                "        col.active = $secondary\n"
+                "        col.inactive = $surface\n"
+                "    }\n"
+                "}\n"
+            )
+        )
+        for line in (
+            'local var_primary = "rgb(98a8b3)"',
+            'local var_surface = "rgb(1c1f21)"',
+            'local var_secondary = "rgb(8d97a5)"',
+        ):
+            assert line in out
+        assert "active_border = var_primary," in out
+        assert "inactive_border = var_surface," in out
+        assert "border_active = var_secondary," in out
+        # No string literals quoting the colours at use sites.
+        assert '"rgb(98a8b3)"' in out  # preamble only
+        assert out.count('"rgb(98a8b3)"') == 1
+        assert "$" not in out
+
+    def test_unused_variable_is_not_emitted(self) -> None:
+        # Only referenced variables make it into the preamble — matches the
+        # Hyprlang side, which silently ignores unused variables.
+        out = serialize_lua(
+            parse_string(
+                "$used = rgb(98a8b3)\n$unused = rgb(112233)\ngeneral:col.active_border = $used\n"
+            )
+        )
+        assert "var_used" in out
+        assert "var_unused" not in out
+        assert "rgb(112233)" not in out
+
+    def test_undefined_variable_passes_through(self) -> None:
+        # No definition for ``$undef`` — ``expand_value_lua`` leaves it as
+        # the literal ``$undef`` and the coercer quotes it.
+        out = serialize_lua(parse_string("general:col.active_border = $undef\n"))
+        assert 'active_border = "$undef",' in out
+
+    def test_variable_chain_emits_both_locals(self) -> None:
+        # ``$accent = $primary`` — the indirection survives on the Lua side
+        # as ``local var_accent = var_primary``. Order matters: ``var_primary``
+        # must be declared first, otherwise Lua evaluates ``var_accent``'s
+        # RHS against an undeclared local and silently captures ``nil``.
+        out = serialize_lua(
+            parse_string(
+                "$primary = rgb(98a8b3)\n$accent = $primary\ngeneral:col.active_border = $accent\n"
+            )
+        )
+        assert 'local var_primary = "rgb(98a8b3)"' in out
+        assert "local var_accent = var_primary" in out
+        assert "active_border = var_accent," in out
+        assert out.index("local var_primary") < out.index("local var_accent")
+
+    def test_multi_hop_chain_orders_deps_first(self) -> None:
+        # Three-deep chain: every dependency lands above its referrer so
+        # the locals resolve to real values rather than ``nil``.
+        out = serialize_lua(
+            parse_string("$a = rgb(111111)\n$b = $a\n$c = $b\ngeneral:col.active_border = $c\n")
+        )
+        a_pos = out.index("local var_a")
+        b_pos = out.index("local var_b")
+        c_pos = out.index("local var_c")
+        assert a_pos < b_pos < c_pos
+
+    def test_variable_in_gradient_keeps_structured_form(self) -> None:
+        # Gradients must stay structured (``{colors=…, angle=…}``) — Hyprland's
+        # Lua API routes single-string and structured-table values through
+        # different code paths.
+        out = serialize_lua(
+            parse_string(
+                "$c1 = rgba(b4e718ee)\n"
+                "$c2 = rgba(00ff99ee)\n"
+                "general:col.active_border = $c1 $c2 45deg\n"
+            )
+        )
+        assert "colors = {var_c1, var_c2}" in out
+        assert "angle = 45," in out
+
+    def test_mainmod_survives_in_bind(self) -> None:
+        out = serialize_lua(parse_string("$mainMod = SUPER\nbind = $mainMod, Q, killactive\n"))
+        assert 'local var_mainMod = "SUPER"' in out
+        # The bind key combo references the local via concat.
+        assert 'hl.bind(var_mainMod .. " + Q"' in out
+
+    def test_numeric_variable_emits_as_lua_number(self) -> None:
+        # ``$size = 10`` becomes ``local var_size = 10`` (number, not string)
+        # so it can drop into a numeric-typed setting like ``gaps_in``
+        # without manual ``tonumber()`` wrapping.
+        out = serialize_lua(parse_string("$size = 10\ngeneral:gaps_in = $size\n"))
+        assert "local var_size = 10" in out
+        assert 'local var_size = "10"' not in out
+        assert "gaps_in = var_size," in out
+
+    def test_float_variable_emits_as_lua_number(self) -> None:
+        out = serialize_lua(parse_string("$opacity = 0.9\ndecoration:active_opacity = $opacity\n"))
+        assert "local var_opacity = 0.9" in out
+        assert "active_opacity = var_opacity," in out
+
+    def test_bool_variable_emits_as_lua_bool(self) -> None:
+        # Hyprlang ``yes`` / ``no`` coerce to native Lua booleans —
+        # required because Hyprland's Lua API strict-checks bool fields.
+        out = serialize_lua(
+            parse_string("$blur = yes\ndecoration {\n    blur:enabled = $blur\n}\n")
+        )
+        assert "local var_blur = true" in out
+        assert "enabled = var_blur," in out
+
+    def test_lua_invalid_variable_name_prefixed(self) -> None:
+        # ``$end`` is a Lua reserved word; ``$my-color`` carries a dash which
+        # isn't a valid Lua identifier character. Both ride the ``var_``
+        # prefix and the dash collapses to underscore.
+        out = serialize_lua(
+            parse_string(
+                "$end = rgb(112233)\n"
+                "$my-color = rgb(445566)\n"
+                "general:col.active_border = $end\n"
+                "general:col.inactive_border = $my-color\n"
+            )
+        )
+        assert 'local var_end = "rgb(112233)"' in out
+        assert 'local var_my_color = "rgb(445566)"' in out
+        assert "active_border = var_end," in out
+        assert "inactive_border = var_my_color," in out
+
+
 class TestValueCoercion:
     def test_int_emitted_as_number(self) -> None:
         assert "gaps_in = 5," in serialize_lua(parse_string("general:gaps_in = 5\n"))

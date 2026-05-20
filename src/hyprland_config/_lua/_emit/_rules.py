@@ -34,12 +34,20 @@ def add_block_rule_field(buffer: dict[str, Any], key: str, value: str) -> None:
     ``match:PROP = VALUE`` lines build up a nested ``match = {…}`` table;
     everything else lives at the top of the rule. Values pass through the
     same coercion as line-style rules so ``float = on`` → ``true`` etc.
+
+    The Hyprlang block-form ``enable`` field is renamed to ``enabled`` on
+    the way out — Hyprland's Lua ``hl.window_rule`` / ``hl.layer_rule``
+    use the longer spelling and reject ``enable`` as an unknown field;
+    the integer ``0`` / ``1`` value also flips to ``true`` / ``false``.
     """
     if key.startswith("match:"):
         prop = key[len("match:") :]
         match = buffer.setdefault("match", {})
         if isinstance(match, dict):
             match[prop] = coerce_rule_value(value)
+        return
+    if key == "enable":
+        buffer["enabled"] = value.strip().lower() not in ("0", "false", "off", "no")
         return
     buffer[key] = coerce_rule_value(value)
 

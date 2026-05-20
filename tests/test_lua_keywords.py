@@ -129,10 +129,9 @@ class TestLayerRule:
 class TestNamedRuleLuaEmission:
     """Block-form named rules round-trip through migration + Lua emission.
 
-    After ``flatten_rule_blocks`` collapses a block to a synthetic
-    single-line keyword, the line-style Lua emitter must recognise
-    ``name:`` / ``enable:`` tokens and bundle the multiple effects
-    into one ``hl.window_rule({...})`` / ``hl.layer_rule({...})`` call.
+    ``normalize_rules`` collapses a block to a structured :class:`Rule`
+    node and the Lua walker renders it as one
+    ``hl.window_rule({...})`` / ``hl.layer_rule({...})`` call.
     """
 
     def test_named_window_block_emits_single_lua_call(self) -> None:
@@ -177,6 +176,23 @@ class TestNamedRuleLuaEmission:
         )
         assert 'name = "from-key"' in out
         assert "float = true" in out
+
+    def test_disabled_block_emits_enabled_false(self) -> None:
+        # Hyprland's Lua API spells the field ``enabled`` and rejects
+        # ``enable`` outright — translate the Hyprlang ``enable = 0/1``
+        # to Lua ``enabled = false/true`` on the way out.
+        out = serialize_lua(
+            parse_string(
+                "windowrule {\n"
+                "    name = off\n"
+                "    enable = 0\n"
+                "    match:class = X\n"
+                "    float = on\n"
+                "}\n"
+            )
+        )
+        assert "enabled = false" in out
+        assert "enable =" not in out  # never the bare ``enable`` field
 
 
 class TestWorkspaceRule:

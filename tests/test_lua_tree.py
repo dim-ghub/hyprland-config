@@ -31,11 +31,13 @@ class TestSourceRecursion:
 
     def test_sourced_variables_expand_in_sibling_lines(self, tmp_path) -> None:
         # Variables declared in the same sourced file are visible to its
-        # other lines — the emitter must expand `$mainMod` to its value.
+        # other lines — the emitter must register them in the preamble and
+        # reference the Lua local at the bind call site.
         (tmp_path / "binds.conf").write_text("$mainMod = SUPER\nbind = $mainMod, Q, killactive,\n")
         (tmp_path / "main.conf").write_text("source = ./binds.conf\n")
         out = serialize_lua(load(tmp_path / "main.conf"))
-        assert 'hl.bind("SUPER + Q"' in out
+        assert 'local var_mainMod = "SUPER"' in out
+        assert 'hl.bind(var_mainMod .. " + Q"' in out
         assert "$mainMod" not in out
 
 
