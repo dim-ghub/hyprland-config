@@ -64,10 +64,20 @@ def _dispatch_movetoworkspace(arg: str, *, silent: bool = False) -> str:
 # forward emitter and the reverse reader (which inverts this map).
 DIR_MAP = {"l": "left", "r": "right", "u": "up", "d": "down"}
 
+_DIRECTIONS: frozenset[str] = frozenset(DIR_MAP.values())
+
+
+def _parse_direction(arg: str) -> str | None:
+    """Map a Hyprlang direction (``l``/``r``/``u``/``d`` or the long form) to
+    the canonical long form, or ``None`` when *arg* isn't a direction."""
+    direction = arg.strip().lower()
+    direction = DIR_MAP.get(direction, direction)
+    return direction if direction in _DIRECTIONS else None
+
 
 def _dispatch_movefocus(arg: str) -> str | None:
-    direction = DIR_MAP.get(arg.strip().lower(), arg.strip().lower())
-    if direction not in ("left", "right", "up", "down"):
+    direction = _parse_direction(arg)
+    if direction is None:
         return None
     return f'hl.dsp.focus({{ direction = "{direction}" }})'
 
@@ -86,9 +96,8 @@ def _dispatch_movewindow(arg: str, *, mouse: bool = False) -> str | None:
         if mouse and selector is None:
             return "hl.dsp.window.drag()"
         return None
-    lower = rest.lower()
-    direction = DIR_MAP.get(lower, lower)
-    if direction in ("left", "right", "up", "down"):
+    direction = _parse_direction(rest)
+    if direction is not None:
         parts = [f'direction = "{direction}"']
         if selector:
             parts.append(f"window = {quote_string(selector)}")
@@ -263,8 +272,8 @@ def _dispatch_setprop(arg: str) -> str | None:
 
 
 def _dispatch_swapwindow(arg: str) -> str | None:
-    direction = DIR_MAP.get(arg.strip().lower(), arg.strip().lower())
-    if direction in ("left", "right", "up", "down"):
+    direction = _parse_direction(arg)
+    if direction is not None:
         return f'hl.dsp.window.swap({{ direction = "{direction}" }})'
     return None
 
@@ -321,8 +330,8 @@ def _dispatch_resizeactive(arg: str) -> str | None:
 
 def _dispatch_moveintogroup(arg: str) -> str | None:
     """``moveintogroup, dir`` → ``hl.dsp.window.move({ into_group = "dir" })``."""
-    direction = DIR_MAP.get(arg.strip().lower(), arg.strip().lower())
-    if direction in ("left", "right", "up", "down"):
+    direction = _parse_direction(arg)
+    if direction is not None:
         return f'hl.dsp.window.move({{ into_group = "{direction}" }})'
     return None
 

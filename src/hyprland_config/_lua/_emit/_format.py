@@ -13,12 +13,10 @@ from typing import Any
 
 from hyprland_config._core._expr import substitute_variables_with_markers
 from hyprland_config._core._types import Color, Gradient
-from hyprland_config._core._values import parse_hyprlang_bool
+from hyprland_config._core._values import FLOAT_LITERAL_RE, INT_LITERAL_RE, parse_hyprlang_bool
 
 INDENT = "    "
 
-_INT_RE = re.compile(r"^-?\d+$")
-_FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Control-char delimiters wrap a Hyprlang variable name (``$mainMod`` →
@@ -232,9 +230,9 @@ def coerce_value(s: str) -> Any:
         if gradient is not None:
             return gradient
         return to_lua_expr(stripped)
-    if _INT_RE.match(stripped):
+    if INT_LITERAL_RE.match(stripped):
         return int(stripped)
-    if _FLOAT_RE.match(stripped):
+    if FLOAT_LITERAL_RE.match(stripped):
         return float(stripped)
     bool_match = _LENIENT_BOOL_RE.match(stripped)
     if bool_match is not None:

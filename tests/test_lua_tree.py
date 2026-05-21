@@ -69,16 +69,29 @@ class TestSerializeLuaTree:
         (tmp_path / "main.conf").write_text("source = ./general.conf\n")
         tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
         assert "gaps_in = 7" in tree[tmp_path / "general.lua"]
-        # The parent only contains a dofile pointer, not the actual content.
+        # The parent only contains a require() pointer, not the actual content.
         assert "gaps_in" not in tree[tmp_path / "main.lua"]
 
-    def test_parent_dofiles_each_child(self, tmp_path) -> None:
+    def test_parent_requires_each_child(self, tmp_path) -> None:
+        # Siblings of the entry file become bare module names — the form
+        # Hyprland's autoreload watches, not an absolute dofile().
         (tmp_path / "a.conf").write_text("env = A, 1\n")
         (tmp_path / "b.conf").write_text("env = B, 2\n")
         (tmp_path / "main.conf").write_text("source = ./a.conf\nsource = ./b.conf\n")
         parent = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))[tmp_path / "main.lua"]
-        assert f'dofile("{tmp_path / "a.lua"}")' in parent
-        assert f'dofile("{tmp_path / "b.lua"}")' in parent
+        assert 'require("a")' in parent
+        assert 'require("b")' in parent
+        assert "dofile" not in parent
+
+    def test_subdir_source_uses_dotted_require(self, tmp_path) -> None:
+        # A file in a subdirectory maps to dot-notation: package.path turns
+        # the dots back into "/" so require("modules.monitors") finds
+        # <root>/modules/monitors.lua.
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "monitors.conf").write_text("monitor = DP-1, preferred, auto, 1\n")
+        (tmp_path / "main.conf").write_text("source = ./modules/monitors.conf\n")
+        parent = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))[tmp_path / "main.lua"]
+        assert 'require("modules.monitors")' in parent
 
     def test_nested_sources_emit_all_files(self, tmp_path) -> None:
         (tmp_path / "leaf.conf").write_text("env = X, 1\n")
@@ -89,8 +102,10 @@ class TestSerializeLuaTree:
         assert (tmp_path / "mid.lua") in tree
         assert (tmp_path / "root.lua") in tree
         assert 'hl.env("X", "1")' in tree[tmp_path / "leaf.lua"]
-        assert f'dofile("{tmp_path / "leaf.lua"}")' in tree[tmp_path / "mid.lua"]
-        assert f'dofile("{tmp_path / "mid.lua"}")' in tree[tmp_path / "root.lua"]
+        # Module names are resolved against the one config root (root.conf's
+        # dir), so nested includes are bare names just like the top-level one.
+        assert 'require("leaf")' in tree[tmp_path / "mid.lua"]
+        assert 'require("mid")' in tree[tmp_path / "root.lua"]
 
     def test_in_memory_doc_without_path_returns_empty_tree(self) -> None:
         # ``parse_string`` produces a Document without a path; there's no
@@ -102,23 +117,25 @@ class TestSerializeLuaTree:
         doc = load(tmp_path / "main.conf")
         assert serialize_lua_tree(doc) == serialize_lua_tree(doc)
 
-    def test_dotd_dir_is_remapped_to_lua_d(self, tmp_path) -> None:
+    def test_dotd_dir_is_flattened_to_plain_subdir(self, tmp_path) -> None:
         # The drop-in dir convention `xxx.conf.d/` is commonly globbed in
         # the user's top-level config (e.g. `source = …conf.d/*`), which
-        # would catch our new `.lua` files and break parsing. Output paths
-        # under such a dir must be redirected to a sibling `xxx.lua.d/`.
+        # would catch our new `.lua` files and break parsing. We flatten the
+        # `.conf.d` suffix to a plain `xxx/` — a different name (so the old
+        # glob misses it) that's also dot-free (so require() can name it).
         confd = tmp_path / "hyprland.conf.d"
         confd.mkdir()
         (confd / "00_env.conf").write_text("env = X, 1\n")
         (tmp_path / "hyprland.conf").write_text("source = ./hyprland.conf.d/00_env.conf\n")
         tree = _by_path(serialize_lua_tree(load(tmp_path / "hyprland.conf")))
-        # Child landed in the remapped directory, NOT next to the .conf.
-        assert (tmp_path / "hyprland.lua.d" / "00_env.lua") in tree
+        # Child landed in the flattened directory, NOT next to the .conf.
+        assert (tmp_path / "hyprland" / "00_env.lua") in tree
         assert (confd / "00_env.lua") not in tree
 
-    def test_parent_dofiles_point_at_remapped_paths(self, tmp_path) -> None:
-        # The parent emit's dofile() lines must follow the remap so the
-        # generated hyprland.lua actually finds the sub-files.
+    def test_parent_requires_flattened_dropins(self, tmp_path) -> None:
+        # Once the drop-in dir is dot-free, its files are reachable by
+        # require() — so they reload on save like every other sub-file,
+        # and the parent points at the flattened location, not `.conf.d`.
         confd = tmp_path / "hyprland.conf.d"
         confd.mkdir()
         (confd / "00_env.conf").write_text("env = X, 1\n")
@@ -126,19 +143,45 @@ class TestSerializeLuaTree:
         parent = _by_path(serialize_lua_tree(load(tmp_path / "hyprland.conf")))[
             tmp_path / "hyprland.lua"
         ]
-        assert f'dofile("{tmp_path / "hyprland.lua.d" / "00_env.lua"}")' in parent
+        assert 'require("hyprland.00_env")' in parent
+        assert "dofile" not in parent
         # And explicitly NOT the old .conf.d location.
         assert "hyprland.conf.d" not in parent
 
-    def test_nested_dotd_dirs_each_remap(self, tmp_path) -> None:
-        # Nested `.conf.d` parents (rare but possible) all remap.
+    def test_source_outside_config_dir_falls_back_to_dofile(self, tmp_path) -> None:
+        # A file outside the main config's directory isn't on package.path,
+        # so require() can't reach it — keep an absolute dofile().
+        cfg = tmp_path / "cfg"
+        cfg.mkdir()
+        other = tmp_path / "shared"
+        other.mkdir()
+        (other / "x.conf").write_text("env = X, 1\n")
+        (cfg / "hyprland.conf").write_text(f"source = {other / 'x.conf'}\n")
+        parent = _by_path(serialize_lua_tree(load(cfg / "hyprland.conf")))[cfg / "hyprland.lua"]
+        assert f'dofile("{other / "x.lua"}")' in parent
+        assert "require(" not in parent
+
+    def test_dotted_filename_stem_falls_back_to_dofile(self, tmp_path) -> None:
+        # A dot in the file stem (colors.dark.lua) would split into two module
+        # segments under package.path, so this also stays on dofile().
+        (tmp_path / "colors.dark.conf").write_text("env = X, 1\n")
+        (tmp_path / "main.conf").write_text("source = ./colors.dark.conf\n")
+        parent = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))[tmp_path / "main.lua"]
+        assert f'dofile("{tmp_path / "colors.dark.lua"}")' in parent
+        assert "require(" not in parent
+
+    def test_nested_dotd_dirs_each_flatten(self, tmp_path) -> None:
+        # Nested `.conf.d` parents (rare but possible) each lose the suffix,
+        # leaving a fully dot-free path that require() can name end to end.
         outer = tmp_path / "outer.conf.d"
         inner = outer / "inner.conf.d"
         inner.mkdir(parents=True)
         (inner / "leaf.conf").write_text("env = X, 1\n")
         (tmp_path / "main.conf").write_text("source = ./outer.conf.d/inner.conf.d/leaf.conf\n")
-        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
-        assert (tmp_path / "outer.lua.d" / "inner.lua.d" / "leaf.lua") in tree
+        tree = serialize_lua_tree(load(tmp_path / "main.conf"))
+        assert (tmp_path / "outer" / "inner" / "leaf.lua") in _by_path(tree)
+        parent = _by_path(tree)[tmp_path / "main.lua"]
+        assert 'require("outer.inner.leaf")' in parent
 
     def test_regular_subdir_not_remapped(self, tmp_path) -> None:
         # Only `.conf.d` triggers the remap — a normal subdir (e.g. `gui/`)

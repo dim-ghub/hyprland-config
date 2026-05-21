@@ -41,9 +41,18 @@ emitted back out in the four-value form on the next round-trip.
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from hyprland_config._core._values import parse_hyprlang_bool
+from hyprland_config._core._values import (
+    HYPRLANG_FALSE_WORDS,
+    HYPRLANG_TRUE_WORDS,
+    parse_hyprlang_bool,
+    value_to_conf,
+)
 
 WorkspaceFieldKind = Literal["string", "int", "bool", "bool_inverse", "gap"]
+
+# Word-shaped booleans only — ``0`` / ``1`` are deliberately excluded so a
+# bare digit on an unknown field still coerces to an int (see _coerce_unknown).
+_BOOL_WORDS: frozenset[str] = (HYPRLANG_TRUE_WORDS | HYPRLANG_FALSE_WORDS) - {"0", "1"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +158,7 @@ def lua_field_to_hyprlang(lua_name: str, value: Any) -> tuple[str, str]:
     """
     field = WORKSPACE_LUA_TO_HYPRLANG.get(lua_name)
     if field is None:
-        return lua_name, _scalar_to_text(value)
+        return lua_name, value_to_conf(value)
 
     if field.kind == "bool":
         return field.hyprlang_name, "true" if _is_truthy(value) else "false"
@@ -159,7 +168,7 @@ def lua_field_to_hyprlang(lua_name: str, value: Any) -> tuple[str, str]:
         return field.hyprlang_name, _format_gap_for_hyprlang(value)
     if field.kind == "int":
         return field.hyprlang_name, str(int(value))
-    return field.hyprlang_name, _scalar_to_text(value)
+    return field.hyprlang_name, value_to_conf(value)
 
 
 def hyprlang_field_to_lua(hyprlang_name: str, value: str) -> tuple[str, Any]:
@@ -188,19 +197,12 @@ def hyprlang_field_to_lua(hyprlang_name: str, value: str) -> tuple[str, Any]:
     return field.lua_name, value
 
 
-def _scalar_to_text(value: Any) -> str:
-    """Stringify a Lua scalar for Hyprlang CSV — minimal escaping."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-
 def _coerce_unknown(text: str) -> Any:
     """Best-effort coercion for a pass-through Hyprlang field value."""
     stripped = text.strip()
     # Bare ``0``/``1`` look like ints for an unknown field — only treat
     # word-shaped booleans as bool here, ints fall through to the int branch.
-    if stripped.lower() in {"true", "yes", "on", "false", "no", "off"}:
+    if stripped.lower() in _BOOL_WORDS:
         return parse_hyprlang_bool(stripped)
     try:
         return int(stripped)

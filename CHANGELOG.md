@@ -5,6 +5,18 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-05-21
+
+### Changed
+
+- `serialize_lua_tree` now bridges sourced sub-files with `require("module.name")` rather than an absolute `dofile(...)`. `require` is the form the shipped Hyprland example recommends and the only one the compositor's autoreload watches, so edits to a sub-file now trigger a reload. Sub-files `require` can't name — those outside the config directory, or with a literal `.` in the path — keep an absolute `dofile`
+- `.conf.d` drop-in directories now flatten to a plain `X/` (`hyprland.conf.d/` becomes `hyprland/`) instead of the previous dotted `X.lua.d/`. The dot-free name still dodges a live `source = …/X.conf.d/*` glob in the untouched `.conf` and lets the drop-ins be named by `require`, so they reload on save like every other sub-file
+
+### Fixed
+
+- The Lua reader resolves `require()` against the main config file's directory (matching Hyprland's `package.path`) instead of the requiring file's directory, so a `require` in a nested sub-file finds the same file the compositor would; previously deeper sub-files were dropped from the parsed `Document`
+- `LuaFile.unmapped` and the `-- TODO` manual-conversion block leaked the internal `\x01`/`\x02` variable-marker sentinels from `expand_value_lua` around any `$variable` in an untranslatable line, instead of the line's original text; both now record the source as written, e.g. `bind = $mainMod SHIFT, V, workspaceopt, allfloat`
+
 ## [0.9.0] - 2026-05-21
 
 ### Added
@@ -269,6 +281,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.1
 [0.9.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.0
 [0.8.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.8.0
 [0.7.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.7.0

@@ -24,6 +24,7 @@ manual-conversion block — fail loudly instead of guessing.
 
 import re
 
+from hyprland_config._core._values import FLOAT_LITERAL_RE, INT_LITERAL_RE
 from hyprland_config._lua._emit._format import lua_var_name, quote_string
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -31,8 +32,6 @@ _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _BARE_VAR_RE = re.compile(rf"^\$({_IDENT})$")
 _BINOP_RE = re.compile(rf"^\$({_IDENT})\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$")
 
-_INT_RE = re.compile(r"^-?\d+$")
-_FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 _QUOTED_RE = re.compile(r"""^(['"])(.*)\1$""")
 
 _NUMERIC_OPS = frozenset({">", "<", ">=", "<="})
@@ -102,7 +101,7 @@ def translate_expression(expr: str) -> tuple[str, set[str]] | None:
 def _parse_number_literal(text: str) -> str | None:
     """Return *text* if it's an int/float literal Lua can compare against."""
     text = text.strip()
-    if _INT_RE.match(text) or _FLOAT_RE.match(text):
+    if INT_LITERAL_RE.match(text) or FLOAT_LITERAL_RE.match(text):
         return text
     return None
 

@@ -414,6 +414,18 @@ class TestUnsupportedKeywords:
         assert "plugin =" in out
         assert "bind = SUPER" in out
 
+    def test_unmapped_line_shows_dollar_var_not_marker_bytes(self) -> None:
+        # An untranslatable bind that references a $var must surface its
+        # original text. Regression: the emitter dumped the marker-substituted
+        # form (\x01mainMod\x02 from expand_value_lua), which rendered as
+        # mojibake boxes in the "won't migrate" UI instead of $mainMod.
+        out = serialize_lua(
+            parse_string("$mainMod = SUPER\nbind = $mainMod SHIFT, V, workspaceopt, allfloat\n")
+        )
+        assert "bind = $mainMod SHIFT, V, workspaceopt, allfloat" in out
+        assert "\x01" not in out
+        assert "\x02" not in out
+
 
 class TestStructure:
     def test_only_assignments_no_extras_block(self) -> None:

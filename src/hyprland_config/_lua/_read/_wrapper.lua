@@ -15,6 +15,13 @@
 
 local records = {}
 local current_source = ""
+-- Directory of the main config file, with trailing slash. Hyprland resolves
+-- require() against package.path = "<configdir>/?.lua;<configdir>/?/init.lua"
+-- (src/config/lua/ConfigManager.cpp) — always relative to the main file's
+-- directory, never the requiring file's. We mirror that so dotted module
+-- names (require("modules.monitors")) resolve to the file Hyprland would
+-- load, even when the require sits in a nested sub-file. Set at entry below.
+local config_root_dir = ""
 -- nil when at top level (treat exec_cmd as a generic "exec"), or the
 -- event name when inside an hl.on callback so the recorder can tag the
 -- exec with hyprland.start / hyprland.shutdown.
@@ -269,29 +276,32 @@ function dofile(path)
     return result
 end
 
--- Some configs use require for sub-files. Re-route through dofile so
--- the recorded source is the actual file path.
+-- Some configs (and everything the migrator emits) use require for
+-- sub-files. Resolve it the way Hyprland does — against the config root,
+-- trying "<root>/<mod>.lua" then "<root>/<mod>/init.lua", the two
+-- package.path templates — and route the hit through the same enter/exit
+-- markers as dofile so the recorded source is the real file path. Anything
+-- we can't resolve falls back to the real require (which may still find a
+-- system module via the default package path).
 local _real_require = require
 function require(modname)
-    -- ``require("foo")`` would look up foo.lua via package.path; we don't
-    -- replicate that resolution. Best-effort: try the same string with
-    -- "/" separators relative to the entry file's dir. If it works,
-    -- great; otherwise fall back to the real require (which may still
-    -- find it via the system package path).
-    local entry_dir = current_source:match("(.*/)")
-    if entry_dir then
-        local candidate = entry_dir .. modname:gsub("%.", "/") .. ".lua"
-        local f = _real_loadfile(candidate)
-        if f then
-            record("__dofile_enter", candidate)
-            local prev = current_source
-            current_source = candidate
-            local ok, perr = pcall(f)
-            current_source = prev
-            record("__dofile_exit", candidate)
-            if ok then return end
-            record("__error", "require failed: " .. tostring(perr))
-            return
+    if config_root_dir ~= "" then
+        local rel = config_root_dir .. modname:gsub("%.", "/")
+        for _, candidate in ipairs({ rel .. ".lua", rel .. "/init.lua" }) do
+            local f = _real_loadfile(candidate)
+            if f then
+                record("__dofile_enter", candidate)
+                local prev = current_source
+                current_source = candidate
+                local ok, result = pcall(f)
+                current_source = prev
+                record("__dofile_exit", candidate)
+                if not ok then
+                    record("__error", "require failed: " .. tostring(result))
+                    return
+                end
+                return result
+            end
         end
     end
     return _real_require(modname)
@@ -308,6 +318,7 @@ if not user_file then
 end
 
 current_source = user_file
+config_root_dir = user_file:match("(.*/)") or ""
 local entry, err = _real_loadfile(user_file)
 if not entry then
     io.stderr:write("load failed: " .. tostring(err) .. "\n")

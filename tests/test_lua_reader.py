@@ -451,6 +451,76 @@ class TestDofileChain:
         assert _keywords(load_lua(main), "env") == ["A, 1", "B, 2"]
 
 
+class TestRequireChain:
+    """``require()`` sub-files read back like ``dofile()`` ones.
+
+    The migrator emits ``require("modules.monitors")`` (the form Hyprland's
+    autoreload watches), so the reader has to resolve module names the way
+    Hyprland does — against the main config file's directory via
+    ``package.path`` — and surface the same Source-node tree.
+    """
+
+    def test_require_follows_into_subfile(self, tmp_path: Path) -> None:
+        (tmp_path / "child.lua").write_text("hl.env('FROM_CHILD', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('child')\n")
+        doc = load_lua(main)
+        assert _keywords(doc, "env") == ["FROM_CHILD, 1"]
+        # The recorded origin is the resolved file, not the main config.
+        source_names = {ln.source_name for _, ln in doc.iter_lines() if isinstance(ln, Keyword)}
+        assert str(tmp_path / "child.lua") in source_names
+
+    def test_require_dotted_module_resolves_subdir(self, tmp_path: Path) -> None:
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "monitors.lua").write_text("hl.env('FROM_SUBDIR', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('modules.monitors')\n")
+        assert _keywords(load_lua(main), "env") == ["FROM_SUBDIR, 1"]
+
+    def test_nested_require_resolves_against_config_root(self, tmp_path: Path) -> None:
+        # a.lua's require must resolve against the main file's dir (the config
+        # root), exactly like Hyprland — not relative to a.lua's own dir. If
+        # it resolved file-relative, "sub.b" would miss and FROM_B vanish.
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "b.lua").write_text("hl.env('FROM_B', '1')\n")
+        (sub / "a.lua").write_text("require('sub.b')\nhl.env('FROM_A', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('sub.a')\n")
+        assert _keywords(load_lua(main), "env") == ["FROM_B, 1", "FROM_A, 1"]
+
+    def test_require_resolves_hyphenated_dropin_name(self, tmp_path: Path) -> None:
+        # Migrated `.conf.d` drop-ins keep names like `00-monitors`; require
+        # treats the module name as a path, not a Lua identifier, so leading
+        # digits and hyphens resolve fine.
+        (tmp_path / "hyprland").mkdir()
+        (tmp_path / "hyprland" / "00-monitors.lua").write_text("hl.env('FROM_DROPIN', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('hyprland.00-monitors')\n")
+        assert _keywords(load_lua(main), "env") == ["FROM_DROPIN, 1"]
+
+    def test_require_resolves_package_init_lua(self, tmp_path: Path) -> None:
+        # The second package.path template, "<root>/?/init.lua", lets a
+        # require name a directory package.
+        (tmp_path / "theme").mkdir()
+        (tmp_path / "theme" / "init.lua").write_text("hl.env('FROM_INIT', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('theme')\n")
+        assert _keywords(load_lua(main), "env") == ["FROM_INIT, 1"]
+
+    def test_require_produces_source_node_with_sub_document(self, tmp_path: Path) -> None:
+        from hyprland_config import Source
+
+        child = tmp_path / "child.lua"
+        child.write_text("hl.env('A', '1')\n")
+        main = tmp_path / "main.lua"
+        main.write_text("require('child')\n")
+        doc = load_lua(main)
+        sources = [ln for ln in doc.lines if isinstance(ln, Source)]
+        assert len(sources) == 1
+        assert sources[0].documents[0].path == child
+
+
 class TestExcludeSourcesOnLuaDocument:
     """``exclude_sources`` must work on flat Lua-derived Documents.
 

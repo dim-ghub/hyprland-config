@@ -14,24 +14,13 @@ from hyprland_config._lua._emit._format import coerce_value, format_table, split
 from hyprland_config._lua._workspace_rules import hyprlang_field_to_lua
 
 
-def coerce_rule_value(value: str) -> Any:
-    """Like ``coerce_value`` but also maps ``on``/``off`` to bool.
-
-    The line-style emitter handles this in ``_parse_rule_action`` when the
-    action and its value live in the same token; block syntax separates
-    them across two lines so we need the same translation here.
-    """
-    if value.strip().lower() in ("on", "off"):
-        return parse_hyprlang_bool(value)
-    return coerce_value(value)
-
-
 def add_block_rule_field(buffer: dict[str, Any], key: str, value: str) -> None:
     """Add one field from a ``windowrule { … }``-style block to its buffer.
 
     ``match:PROP = VALUE`` lines build up a nested ``match = {…}`` table;
     everything else lives at the top of the rule. Values pass through the
-    same coercion as line-style rules so ``float = on`` → ``true`` etc.
+    same :func:`coerce_value` coercion as line-style rules, so ``float = on``
+    → ``true`` while a numeric ``opacity = 1`` stays ``1``.
 
     The Hyprlang block-form ``enable`` field is renamed to ``enabled`` on
     the way out — Hyprland's Lua ``hl.window_rule`` / ``hl.layer_rule``
@@ -42,14 +31,14 @@ def add_block_rule_field(buffer: dict[str, Any], key: str, value: str) -> None:
         prop = key[len("match:") :]
         match = buffer.setdefault("match", {})
         if isinstance(match, dict):
-            match[prop] = coerce_rule_value(value)
+            match[prop] = coerce_value(value)
         return
     if key == "enable":
         # Anything we can't read as a bool is treated as enabled — same
         # permissive default Hyprland uses for malformed block fields.
         buffer["enabled"] = parse_hyprlang_bool(value) is not False
         return
-    buffer[key] = coerce_rule_value(value)
+    buffer[key] = coerce_value(value)
 
 
 def _parse_rule_action(action: str) -> tuple[str, Any]:

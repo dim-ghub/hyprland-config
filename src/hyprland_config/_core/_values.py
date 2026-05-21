@@ -1,11 +1,19 @@
 """Config value conversion — between Python types and Hyprland config strings."""
 
+import re
+
 # Hyprland's Hyprlang parser accepts these (case-insensitive) for boolean
 # fields. Single source of truth for the whole library — every code path
 # that needs to coerce a string to a bool should route through
 # :func:`parse_hyprlang_bool`.
 HYPRLANG_TRUE_WORDS: frozenset[str] = frozenset({"true", "yes", "on", "1"})
 HYPRLANG_FALSE_WORDS: frozenset[str] = frozenset({"false", "no", "off", "0"})
+
+# Recognise a bare integer / float literal in a Hyprlang value string. Shared
+# by the Lua value coercer and the conditional-expression translator so both
+# agree on what counts as a number.
+INT_LITERAL_RE = re.compile(r"^-?\d+$")
+FLOAT_LITERAL_RE = re.compile(r"^-?\d+\.\d+$")
 
 
 def parse_hyprlang_bool(value: object) -> bool | None:

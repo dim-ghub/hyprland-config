@@ -58,6 +58,7 @@ from hyprland_config._core._model import (
     Variable,
 )
 from hyprland_config._core._rules import LAYER_BOOL_EFFECTS, V3_BOOL_EFFECTS
+from hyprland_config._core._values import parse_hyprlang_bool
 from hyprland_config._hyprlang._bind import is_bind_keyword
 from hyprland_config._lua._emit._bind import emit_bind
 from hyprland_config._lua._emit._conditional import translate_expression
@@ -193,7 +194,8 @@ def serialize_lua(doc: Document) -> str:
 
     Use :func:`serialize_lua_tree` instead when you want to preserve the
     original ``hyprland.conf.d/*.conf`` split as separate ``.lua`` files
-    bridged by ``dofile()`` calls.
+    bridged by ``require()`` calls (``dofile()`` only where ``require``
+    can't name the file).
     """
     state = _EmitState()
     for owning_doc, line in doc.iter_lines(recursive=True):
@@ -206,13 +208,16 @@ def serialize_lua_tree(doc: Document) -> list[LuaFile]:
 
     Returns one :class:`LuaFile` per document reached via ``source = …``;
     each carries the resolved output path (``.conf`` swapped for ``.lua``,
-    ``X.conf.d`` directories remapped to ``X.lua.d``), the rendered
-    content, and the list of original lines that didn't translate. The
-    parent's content gets ``dofile("…/foo.lua")`` calls at the position
-    of each ``source`` line.
+    ``X.conf.d`` drop-in directories flattened to a plain ``X/``), the rendered
+    content, and the list of original lines that didn't translate. At the
+    position of each ``source`` line the parent gets a ``require("foo")``
+    call — the form Hyprland's autoreload watches — falling back to an
+    absolute ``dofile("…/foo.lua")`` only for sub-files ``require`` can't
+    name (see :func:`_source_include`).
 
     Documents without a ``path`` attribute (e.g. ``parse_string`` input)
-    are skipped — there's no natural file name to use for them.
+    are skipped — there's no natural file name to use for them, and no
+    config root to resolve ``require`` module names against.
 
     Caveat: each output file's ``hl.config({...})`` block is the merged
     last-wins result of *that file's* assignments. If you depend on a
@@ -221,19 +226,22 @@ def serialize_lua_tree(doc: Document) -> list[LuaFile]:
     happens across the whole tree in evaluation order.
     """
     output: list[LuaFile] = []
-    _emit_doc_tree(doc, output)
+    # Hyprland resolves ``require`` against the main config file's directory
+    # (see :func:`_lua_module_name`), so the whole tree shares one root.
+    config_root = doc.path.parent if doc.path is not None else None
+    _emit_doc_tree(doc, output, config_root)
     return output
 
 
-def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
+def _emit_doc_tree(doc: Document, output: list[LuaFile], config_root: Path | None) -> None:
     state = _EmitState()
     for line in doc.lines:
         if isinstance(line, Source):
             for sub_doc in line.documents:
-                _emit_doc_tree(sub_doc, output)
+                _emit_doc_tree(sub_doc, output, config_root)
                 sub_lua_path = _conf_path_to_lua(sub_doc.path)
                 if sub_lua_path is not None:
-                    state.current.extras.append(f"dofile({quote_string(str(sub_lua_path))})")
+                    state.current.extras.append(_source_include(sub_lua_path, config_root))
             continue
         _process_line(line, state, doc)
 
@@ -253,10 +261,14 @@ def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
 def _conf_path_to_lua(path: Path | None) -> Path | None:
     """Map a Hyprlang config path to its ``.lua`` output path.
 
-    Renames the ``.conf`` suffix to ``.lua`` and remaps any parent
-    ``X.conf.d`` directory to ``X.lua.d`` — stops a wildcard
-    ``source = ~/.config/hypr/hyprland.conf.d/*`` from picking up the new
-    ``.lua`` siblings and trying to parse them as Hyprlang.
+    Renames the ``.conf`` suffix to ``.lua`` and strips the ``.conf.d``
+    drop-in suffix from any parent directory, so ``X.conf.d/`` becomes a
+    plain ``X/``. Renaming the directory stops a wildcard
+    ``source = ~/.config/hypr/hyprland.conf.d/*`` (still live in the
+    untouched ``.conf``) from picking up the new ``.lua`` files and trying
+    to parse them as Hyprlang. Dropping the dots is what lets the migrated
+    drop-ins be named by ``require`` (see :func:`_lua_module_name`), so they
+    reload on save like every other sub-file.
     """
     if path is None:
         return None
@@ -266,8 +278,48 @@ def _conf_path_to_lua(path: Path | None) -> Path | None:
 
 def _remap_d_dir(name: str) -> str:
     if name.endswith(".conf.d"):
-        return name[: -len(".conf.d")] + ".lua.d"
+        return name[: -len(".conf.d")]
     return name
+
+
+def _source_include(sub_lua_path: Path, config_root: Path | None) -> str:
+    """Render the Lua that pulls a sourced sub-file into its parent.
+
+    Prefers ``require("a.b")`` over ``dofile("/abs/a/b.lua")``. ``require``
+    is the form the shipped example config recommends, and the only one
+    Hyprland's autoreload watches: its ``package.searchers`` hook records
+    every ``require``'d path for the file watcher, whereas ``dofile`` opens
+    the file directly and is never tracked. Falls back to an absolute
+    ``dofile`` only when ``require`` can't name the file — see
+    :func:`_lua_module_name`.
+    """
+    if config_root is not None:
+        module = _lua_module_name(sub_lua_path, config_root)
+        if module is not None:
+            return f"require({quote_string(module)})"
+    return f"dofile({quote_string(str(sub_lua_path))})"
+
+
+def _lua_module_name(out_path: Path, config_root: Path) -> str | None:
+    """Map a ``.lua`` output path to its ``require`` module name, or ``None``.
+
+    Hyprland resolves ``require`` against ``package.path`` set to
+    ``<config_root>/?.lua;<config_root>/?/init.lua``, substituting the ``.``
+    in a module name for the path separator. So ``<root>/modules/monitors.lua``
+    is reachable as ``"modules.monitors"`` — but only when the file lives
+    under *config_root* and no path segment carries a literal ``.``. A dot in
+    a directory name or in the file stem would be read as a separator and
+    miss the file, so those return ``None`` and the caller keeps an absolute
+    ``dofile``.
+    """
+    try:
+        relative = out_path.relative_to(config_root)
+    except ValueError:
+        return None  # outside the config dir — not reachable via package.path
+    segments = [*relative.parts[:-1], relative.stem]
+    if any("." in segment for segment in segments):
+        return None
+    return ".".join(segments)
 
 
 def _assemble_lua(state: _EmitState) -> str:
@@ -531,10 +583,11 @@ def _effect_value_to_lua(name: str, args: str) -> Any:
     """
     stripped = args.strip()
     if name in V3_BOOL_EFFECTS or name in LAYER_BOOL_EFFECTS:
-        if not stripped or stripped.lower() in ("on", "true", "yes", "1"):
+        if not stripped:
             return True
-        if stripped.lower() in ("off", "false", "no", "0"):
-            return False
+        parsed = parse_hyprlang_bool(stripped)
+        if parsed is not None:
+            return parsed
     return coerce_value(stripped)
 
 
@@ -559,6 +612,10 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
     # so ``$mainMod`` flows downstream as a token referencing the Lua
     # local ``var_mainMod`` rather than the inlined value.
     args = expand_value_lua(line.value, owning_doc.variables, state.referenced_vars)
+    # Manual-conversion fallbacks below surface the user's original text, not
+    # ``args``: ``expand_value_lua`` wraps every ``$var`` in \x01..\x02 sentinel
+    # bytes, which would render as mojibake boxes in the "won't migrate" list.
+    original = f"{name} = {line.value}"
 
     # ``submap = NAME`` opens a Hyprlang submap; the binds that follow until
     # the matching ``submap = reset`` belong to it. Lua's ``hl.define_submap``
@@ -599,7 +656,7 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
     if is_bind_keyword(name):
         result = emit_bind(name, args)
         if result is None:
-            state.skipped.append(f"{name} = {args}")
+            state.skipped.append(original)
         elif state.submap is not None:
             state.submap.body.append(result)
         else:
@@ -611,11 +668,11 @@ def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> 
         # Future or plugin keyword we don't yet translate. Surface the
         # original line in the manual-conversion block instead of silently
         # producing invalid Lua.
-        state.skipped.append(f"{name} = {args}")
+        state.skipped.append(original)
         return
     result = emitter(args)
     if result is None:
-        state.skipped.append(f"{name} = {args}")
+        state.skipped.append(original)
     else:
         state.current.extras.append(result)
 

@@ -213,20 +213,20 @@ tree = serialize_lua_tree(doc)
 
 # tree is a list of LuaFile(path, source_path, content, unmapped):
 #   LuaFile(path=Path("~/.../hyprland.lua"),       content="...", unmapped=[]),
-#   LuaFile(path=Path("~/.../hyprland.lua.d/00_env.lua"), content="...", unmapped=[]),
+#   LuaFile(path=Path("~/.../hyprland/00_env.lua"), content="...", unmapped=[]),
 #   ...
-# Each parent file's content has `dofile("…/foo.lua")` calls in place
-# of the original `source = …/foo.conf` lines.
+# Each parent file's content has `require("module.name")` calls in place
+# of the original `source = …/foo.conf` lines (the recommended form for Hyprland 0.55+).
 
 for entry in tree:
     entry.path.write_text(entry.content)
 ```
 
-Each sub-document gets its own `.lua` file (`.conf` swapped for `.lua`) and the parent stitches them together with `dofile()` at the right positions, matching how Hyprland evaluates the original tree at runtime. Caveat: each emitted file's `hl.config({...})` block is the merged last-wins result of *that file's* assignments — if you depend on a parent assignment that comes *after* a `source` directive overriding the same key in the child, use `serialize_lua()` instead so the merge spans the whole tree.
+Each sub-document gets its own `.lua` file (`.conf` swapped for `.lua`) and the parent stitches them together with `require("module.name")` calls resolved against the main config directory, matching Hyprland's own `package.path` resolution. Caveat: each emitted file's `hl.config({...})` block is the merged last-wins result of *that file's* assignments — if you depend on a parent assignment that comes *after* a `source` directive overriding the same key in the child, use `serialize_lua()` instead so the merge spans the whole tree.
 
 ### Read a Lua config
 
-`load_lua()` is the inverse direction — it parses an existing `hyprland.lua` (and any files it pulls in via `dofile`) into the same `Document` tree the Hyprlang parser produces, so the rest of the API works identically regardless of on-disk format:
+`load_lua()` is the inverse direction — it parses an existing `hyprland.lua` (and any files it pulls in via `require()`) into the same `Document` tree the Hyprlang parser produces, so the rest of the API works identically regardless of on-disk format:
 
 ```python
 from hyprland_config import load_lua
