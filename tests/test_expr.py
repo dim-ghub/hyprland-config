@@ -2,8 +2,8 @@
 
 import pytest
 
-from hyprland_config import ExprError, evaluate_expression, parse_string
-from hyprland_config._core._expr import expand_expressions
+from hyprland_config import parse_string
+from hyprland_config._core._expr import ExprError, evaluate_expression, expand_expressions
 
 
 class TestEvaluateExpression:
@@ -67,7 +67,7 @@ class TestEvaluateExpression:
             evaluate_expression("5 & 3")
 
     def test_missing_closing_paren(self):
-        with pytest.raises(ExprError, match="missing closing parenthesis"):
+        with pytest.raises(ExprError, match="mismatched parentheses"):
             evaluate_expression("(2 + 3")
 
     def test_whitespace_handling(self):

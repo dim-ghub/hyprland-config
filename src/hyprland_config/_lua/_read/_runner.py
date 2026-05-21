@@ -12,6 +12,7 @@ missing so calling code can surface that to the user.
 """
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,24 @@ from typing import Any
 from hyprland_config._core._model import Document
 from hyprland_config._hyprlang._parser import ParseError
 from hyprland_config._lua._read._records import records_to_document
+
+# Names we'll probe for the Lua interpreter, in preference order. Plain
+# ``lua`` first (most distros symlink it); then versioned binaries newest
+# first so a system shipping both 5.4 and 5.3 picks 5.4.
+_LUA_BINARY_CANDIDATES = ("lua", "lua5.5", "lua5.4", "lua5.3", "lua5.2")
+
+
+def _find_lua() -> str | None:
+    """Locate a usable Lua interpreter on ``PATH`` (or via ``$HYPRLAND_CONFIG_LUA``)."""
+    override = os.environ.get("HYPRLAND_CONFIG_LUA")
+    if override:
+        return override
+    for name in _LUA_BINARY_CANDIDATES:
+        found = shutil.which(name)
+        if found is not None:
+            return found
+    return None
+
 
 # The wrapper script lives next to this module — keep it as a sibling
 # .lua file rather than an embedded string so a Lua-aware editor (or
@@ -63,7 +82,7 @@ def load_lua(path: str | Path) -> Document:
 
 def _run_wrapper(path: Path) -> list[dict[str, Any]]:
     """Invoke the Lua wrapper and parse its stdout into records."""
-    lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("lua5.3")
+    lua = _find_lua()
     if lua is None:
         raise LuaReaderError(
             "the `lua` interpreter is required to read Lua-mode Hyprland "

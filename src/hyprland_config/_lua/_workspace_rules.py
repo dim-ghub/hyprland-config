@@ -41,6 +41,8 @@ emitted back out in the four-value form on the next round-trip.
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from hyprland_config._core._values import parse_hyprlang_bool
+
 WorkspaceFieldKind = Literal["string", "int", "bool", "bool_inverse", "gap"]
 
 
@@ -75,20 +77,9 @@ WORKSPACE_HYPRLANG_TO_LUA: dict[str, WorkspaceField] = {
 
 
 def _is_truthy(value: Any) -> bool:
-    """Coerce Lua/Hyprlang scalar values into a bool.
-
-    Accepts native booleans, ``1``/``0``, and the strings Hyprland
-    recognises (``true``/``false``/``yes``/``no``/``on``/``off``).
-    Unknown values default to ``False`` — same fallback Hyprland uses
-    when it can't parse a bool from a rule field.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "on", "1"}
-    return False
+    """Coerce Lua/Hyprlang scalar values into a bool, defaulting to False."""
+    # Hyprland silently treats malformed bool fields as False; mirror that.
+    return parse_hyprlang_bool(value) or False
 
 
 def _format_gap_for_hyprlang(value: Any) -> str:
@@ -207,11 +198,10 @@ def _scalar_to_text(value: Any) -> str:
 def _coerce_unknown(text: str) -> Any:
     """Best-effort coercion for a pass-through Hyprlang field value."""
     stripped = text.strip()
-    lower = stripped.lower()
-    if lower in {"true", "yes", "on"}:
-        return True
-    if lower in {"false", "no", "off"}:
-        return False
+    # Bare ``0``/``1`` look like ints for an unknown field — only treat
+    # word-shaped booleans as bool here, ints fall through to the int branch.
+    if stripped.lower() in {"true", "yes", "on", "false", "no", "off"}:
+        return parse_hyprlang_bool(stripped)
     try:
         return int(stripped)
     except ValueError:

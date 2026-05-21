@@ -20,7 +20,11 @@ from hyprland_config._hyprlang._parser import (
     parse_file,
     parse_string,
 )
-from hyprland_config._hyprlang._serializer import render_rule_hyprlang, serialize_hyprlang
+from hyprland_config._hyprlang._serializer import (
+    render_rule_hyprlang,
+    render_rule_live,
+    serialize_hyprlang,
+)
 from hyprland_config._hyprlang._source import SourceCycleError
 
 __all__ = [
@@ -32,5 +36,6 @@ __all__ = [
     "parse_file",
     "parse_string",
     "render_rule_hyprlang",
+    "render_rule_live",
     "serialize_hyprlang",
 ]

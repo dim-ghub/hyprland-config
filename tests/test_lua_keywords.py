@@ -461,18 +461,12 @@ class TestExecBlocks:
         # Only one start block, not two.
         assert out.count('hl.on("hyprland.start"') == 1
 
-    def test_emit_migration_markers_is_noop(self) -> None:
-        # The parameter survives for backwards compatibility but no
-        # longer affects the output. The marker comment is gone entirely
-        # — the emitter now keeps ``exec`` and ``exec-once`` distinct,
-        # so there's nothing to flag for manual review.
-        with_flag = serialize_lua(parse_string("exec-once = dunst\n"))
-        without_flag = serialize_lua(
-            parse_string("exec-once = dunst\n"), emit_migration_markers=False
-        )
-        assert with_flag == without_flag
-        assert "TODO: was exec-once" not in with_flag
-        assert 'hl.exec_cmd("dunst")' in with_flag
+    def test_no_migration_markers_in_exec_blocks(self) -> None:
+        # The emitter keeps ``exec`` and ``exec-once`` distinct, so it never
+        # needs the historical ``-- TODO: was exec-once`` hint.
+        out = serialize_lua(parse_string("exec-once = dunst\n"))
+        assert "TODO: was exec-once" not in out
+        assert 'hl.exec_cmd("dunst")' in out
 
     def test_exec_shutdown_separate_block(self) -> None:
         out = serialize_lua(parse_string("exec-shutdown = sync\n"))

@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from hyprland_config import (
-    ErrorLine,
     ParseError,
     load,
-    parse_file,
     parse_string,
     serialize_hyprlang,
 )
+from hyprland_config._core._model import ErrorLine
+from hyprland_config._hyprlang import parse_file
 
 
 class TestLenientParsing:

@@ -1,13 +1,13 @@
 """Tests for deprecation checking and migration helpers."""
 
 from hyprland_config import (
-    KeyValueLine,
     check_deprecated,
     migrate,
-    parse_file,
     parse_string,
     serialize_hyprlang,
 )
+from hyprland_config._core._model import KeyValueLine
+from hyprland_config._hyprlang import parse_file
 
 
 class TestCheckDeprecated:

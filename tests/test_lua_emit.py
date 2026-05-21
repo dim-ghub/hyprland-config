@@ -3,7 +3,8 @@
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from hyprland_config import Document, load, parse_string, serialize_lua, serialize_lua_tree
+from hyprland_config import Document, load, parse_string, serialize_lua
+from hyprland_config._lua import serialize_lua_tree
 from tests._lua_helpers import assert_lua_compiles, requires_lua
 
 

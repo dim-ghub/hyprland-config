@@ -1,10 +1,9 @@
 """Migration orchestrator: the :func:`migrate` entry point and the
 ``_MIGRATIONS`` table that drives it.
 
-Also houses the small line-rewrite helpers that the per-version
-transforms (here and in :mod:`._windowrule`) share, plus the migration
-factories for one-shot renames/moves/deletes that don't need their
-own function.
+Houses the migration factories for one-shot renames/moves/deletes that
+don't need their own function. Per-version transforms with more meat
+live in :mod:`._windowrule`.
 
 Notable: ``BLUR_OPTIONS`` lives here because the blur-subsection
 migration is its primary consumer; :mod:`._deprecations` imports it
@@ -13,11 +12,17 @@ to derive matching warning rules.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import cache, cached_property
+from functools import cached_property
 from typing import Literal
 
 from hyprland_config._core._model import Document, KeyValueLine
 from hyprland_config._core._types import parse_version
+from hyprland_config._migrate._helpers import transform_lines
+from hyprland_config._migrate._windowrule import (
+    migrate_windowrule_v1_to_v2,
+    migrate_windowrule_v2_to_v3,
+    normalize_rules,
+)
 
 # Blur options that moved from decoration:blur_* to decoration:blur:* in v0.40.
 BLUR_OPTIONS = ("size", "passes", "new_optimizations", "ignore_opacity")
@@ -45,22 +50,6 @@ class _Migration:
     @cached_property
     def from_ver(self) -> tuple[int, ...]:
         return parse_version(self.from_version)
-
-
-def _transform_lines(
-    doc: Document,
-    predicate: Callable[[KeyValueLine], bool],
-    transform: Callable[[KeyValueLine], None],
-) -> bool:
-    """Apply a transform to matching key-value lines. Returns True if any changed."""
-    changed = False
-    for line in doc.lines:
-        if isinstance(line, KeyValueLine) and predicate(line):
-            transform(line)
-            changed = True
-    if changed:
-        doc.mark_dirty()
-    return changed
 
 
 def _rewrite_line_key(line: KeyValueLine, new_full_key: str) -> None:
@@ -91,7 +80,7 @@ def _migrate_blur_options(doc: Document) -> bool:
     def transform(line: KeyValueLine) -> None:
         _rewrite_line_key(line, renames[line.full_key])
 
-    return _transform_lines(doc, lambda ln: ln.full_key in renames, transform)
+    return transform_lines(doc, lambda ln: ln.full_key in renames, transform)
 
 
 def _make_rename_migration(
@@ -117,8 +106,8 @@ def _make_rename_migration(
 
     if match_by == "key":
         old_leaf = old_full_key.rsplit(":", 1)[-1]
-        return lambda doc: _transform_lines(doc, lambda ln: ln.key == old_leaf, transform)
-    return lambda doc: _transform_lines(doc, lambda ln: ln.full_key == old_full_key, transform)
+        return lambda doc: transform_lines(doc, lambda ln: ln.key == old_leaf, transform)
+    return lambda doc: transform_lines(doc, lambda ln: ln.full_key == old_full_key, transform)
 
 
 def _make_delete_migration(full_key: str) -> Callable[[Document], bool]:
@@ -181,84 +170,71 @@ def _make_move_migration(old_full_key: str, new_full_key: str) -> Callable[[Docu
     return migration
 
 
-@cache
-def _migrations() -> list[_Migration]:
-    """Return the sorted migrations list, built once on first call.
-
-    The body imports :mod:`._windowrule` locally because that module
-    imports :func:`_transform_lines` from here — a top-level import the
-    other way would deadlock.
-    """
-    from hyprland_config._migrate._windowrule import (
-        migrate_windowrule_v1_to_v2,
-        migrate_windowrule_v2_to_v3,
-    )
-
-    return sorted(
-        [
-            _Migration(
-                "Rename exec_once → exec-once",
-                "0.33",
-                "0.34",
-                _make_rename_migration("exec_once", "exec-once", match_by="key"),
-            ),
-            _Migration(
-                "Move blur options to decoration:blur subsection",
-                "0.39",
-                "0.40",
-                _migrate_blur_options,
-            ),
-            _Migration(
-                "Rename no_cursor_warps → no_warps",
-                "0.40",
-                "0.41",
-                _make_rename_migration("cursor:no_cursor_warps", "cursor:no_warps"),
-            ),
-            _Migration(
-                "Move sensitivity from general to input",
-                "0.39",
-                "0.40",
-                _make_rename_migration("general:sensitivity", "input:sensitivity"),
-            ),
-            _Migration(
-                "Convert windowrule v1 → windowrulev2",
-                "0.47",
-                "0.48",
-                migrate_windowrule_v1_to_v2,
-            ),
-            _Migration(
-                "Convert windowrulev2 → windowrule v3",
-                "0.52",
-                "0.53",
-                migrate_windowrule_v2_to_v3,
-            ),
-            _Migration(
-                "Remove dwindle:pseudotile (no-op since v0.55)",
-                "0.54",
-                "0.55",
-                _make_delete_migration("dwindle:pseudotile"),
-            ),
-            _Migration(
-                "Move misc:vfr → debug:vfr",
-                "0.54",
-                "0.55",
-                _make_move_migration("misc:vfr", "debug:vfr"),
-            ),
-            _Migration(
-                "Remove render:cm_fs_passthrough (automatic since v0.55)",
-                "0.54",
-                "0.55",
-                _make_delete_migration("render:cm_fs_passthrough"),
-            ),
-            _Migration(
-                "Remove decoration:shadow:ignore_window (always enabled since v0.55)",
-                "0.54",
-                "0.55",
-                _make_delete_migration("decoration:shadow:ignore_window"),
-            ),
-        ],
-        key=lambda m: m.from_ver,
-    )
+_MIGRATIONS: list[_Migration] = sorted(
+    [
+        _Migration(
+            "Rename exec_once → exec-once",
+            "0.33",
+            "0.34",
+            _make_rename_migration("exec_once", "exec-once", match_by="key"),
+        ),
+        _Migration(
+            "Move blur options to decoration:blur subsection",
+            "0.39",
+            "0.40",
+            _migrate_blur_options,
+        ),
+        _Migration(
+            "Rename no_cursor_warps → no_warps",
+            "0.40",
+            "0.41",
+            _make_rename_migration("cursor:no_cursor_warps", "cursor:no_warps"),
+        ),
+        _Migration(
+            "Move sensitivity from general to input",
+            "0.39",
+            "0.40",
+            _make_rename_migration("general:sensitivity", "input:sensitivity"),
+        ),
+        _Migration(
+            "Convert windowrule v1 → windowrulev2",
+            "0.47",
+            "0.48",
+            migrate_windowrule_v1_to_v2,
+        ),
+        _Migration(
+            "Convert windowrulev2 → windowrule v3",
+            "0.52",
+            "0.53",
+            migrate_windowrule_v2_to_v3,
+        ),
+        _Migration(
+            "Remove dwindle:pseudotile (no-op since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("dwindle:pseudotile"),
+        ),
+        _Migration(
+            "Move misc:vfr → debug:vfr",
+            "0.54",
+            "0.55",
+            _make_move_migration("misc:vfr", "debug:vfr"),
+        ),
+        _Migration(
+            "Remove render:cm_fs_passthrough (automatic since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("render:cm_fs_passthrough"),
+        ),
+        _Migration(
+            "Remove decoration:shadow:ignore_window (always enabled since v0.55)",
+            "0.54",
+            "0.55",
+            _make_delete_migration("decoration:shadow:ignore_window"),
+        ),
+    ],
+    key=lambda m: m.from_ver,
+)
 
 
 def migrate(
@@ -305,13 +281,11 @@ def migrate(
     MigrationResult:
         Lists of applied and skipped migration descriptions.
     """
-    from hyprland_config._migrate._windowrule import normalize_rules
-
     result = MigrationResult()
     from_ver = parse_version(from_version) if from_version is not None else None
     to_ver = parse_version(to_version) if to_version is not None else None
 
-    for m in _migrations():
+    for m in _MIGRATIONS:
         if from_ver is not None and m.from_ver < from_ver:
             continue
         if to_ver is not None and m.from_ver >= to_ver:

@@ -9,9 +9,9 @@ import re
 from dataclasses import dataclass
 from typing import Self
 
-_RGBA_RE = re.compile(r"rgba\(([0-9a-f]{8})\)$", re.IGNORECASE)
-_RGB_RE = re.compile(r"rgb\(([0-9a-f]{6})\)$", re.IGNORECASE)
-_HEX_ARGB_RE = re.compile(r"(?:0x)?([0-9a-f]{8})$", re.IGNORECASE)
+_RGBA_RE = re.compile(r"rgba\(([0-9a-f]{8})\)", re.IGNORECASE)
+_RGB_RE = re.compile(r"rgb\(([0-9a-f]{6})\)", re.IGNORECASE)
+_HEX_ARGB_RE = re.compile(r"(?:0x)?([0-9a-f]{8})", re.IGNORECASE)
 _ANGLE_RE = re.compile(r"(\d+)deg$")
 
 
@@ -45,17 +45,17 @@ class Color:
         """
         text = text.strip()
 
-        m = _RGBA_RE.match(text)
+        m = _RGBA_RE.fullmatch(text)
         if m:
             h = m.group(1)
             return cls(r=int(h[0:2], 16), g=int(h[2:4], 16), b=int(h[4:6], 16), a=int(h[6:8], 16))
 
-        m = _RGB_RE.match(text)
+        m = _RGB_RE.fullmatch(text)
         if m:
             h = m.group(1)
             return cls(r=int(h[0:2], 16), g=int(h[2:4], 16), b=int(h[4:6], 16))
 
-        m = _HEX_ARGB_RE.match(text)
+        m = _HEX_ARGB_RE.fullmatch(text)
         if m:
             h = m.group(1)
             return cls(a=int(h[0:2], 16), r=int(h[2:4], 16), g=int(h[4:6], 16), b=int(h[6:8], 16))
@@ -63,7 +63,6 @@ class Color:
         raise ValueError(f"Cannot parse color: {text!r}")
 
     def to_rgba(self) -> str:
-        """Format as ``rgba(rrggbbaa)``."""
         return f"rgba({self.r:02x}{self.g:02x}{self.b:02x}{self.a:02x})"
 
     def to_rgb(self) -> str:
@@ -71,11 +70,10 @@ class Color:
         return f"rgb({self.r:02x}{self.g:02x}{self.b:02x})"
 
     def to_hex(self) -> str:
-        """Format as ``0xAARRGGBB``."""
+        """Format as ``0xAARRGGBB`` (the IPC wire format)."""
         return f"0x{self.a:02x}{self.r:02x}{self.g:02x}{self.b:02x}"
 
     def __str__(self) -> str:
-        """Format as ``rgba(rrggbbaa)``."""
         return self.to_rgba()
 
 
@@ -118,7 +116,6 @@ class Gradient:
         return cls(colors=tuple(colors), angle=angle)
 
     def __str__(self) -> str:
-        """Format the gradient as a Hyprland value string."""
         parts = [c.to_rgba() for c in self.colors]
         if self.angle != 0:
             parts.append(f"{self.angle}deg")
@@ -159,7 +156,6 @@ class Vec2:
         return cls(x=int(x) if x.is_integer() else x, y=int(y) if y.is_integer() else y)
 
     def __str__(self) -> str:
-        """Format as ``x y``."""
         return f"{self.x} {self.y}"
 
 
@@ -198,11 +194,9 @@ def normalize_gradient_string(value: str) -> str:
     for token in tokens:
         if token.endswith("deg") or token.startswith("0x") or "(" in token:
             out.append(token)
-        elif _HEX_ARGB_RE.match(token):
-            # ``_HEX_ARGB_RE`` accepts both ``0xAARRGGBB`` and bare
-            # ``AARRGGBB``; the prefix check above filters out the
-            # ``0x``-prefixed form, so this branch only ever matches
-            # bare 8-hex tokens.
+        elif _HEX_ARGB_RE.fullmatch(token):
+            # Bare ``AARRGGBB`` token — the prefix check above already
+            # filtered out the ``0x``-wrapped form.
             out.append(f"0x{token}")
         else:
             out.append(token)

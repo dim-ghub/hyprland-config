@@ -11,7 +11,7 @@ from typing import Any
 
 from hyprland_config._core._model import Assignment, Document, Rule, SectionClose, SectionOpen
 from hyprland_config._lua._read._config import format_number, scalar_to_hyprlang
-from hyprland_config._lua._workspace_fields import lua_field_to_hyprlang
+from hyprland_config._lua._workspace_rules import lua_field_to_hyprlang
 
 
 def monitor_value(t: dict[str, Any]) -> str:

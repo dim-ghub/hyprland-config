@@ -46,8 +46,8 @@ class ConversionPlan:
         return bool(self.existing_lua)
 
     @property
-    def primary_output(self) -> Path | None:
-        return self.input_path.with_suffix(".lua") if self.input_path else None
+    def primary_output(self) -> Path:
+        return self.input_path.with_suffix(".lua")
 
 
 @dataclass
@@ -111,7 +111,7 @@ def execute_conversion(plan: ConversionPlan, *, overwrite: bool = False) -> Conv
     """
     result = ConversionResult()
 
-    staged: dict[Path, Path] = {}
+    pending: dict[Path, Path] = {}
     for path, content in plan.output_files.items():
         if path.exists() and not overwrite:
             result.skipped.append(path)
@@ -121,27 +121,25 @@ def execute_conversion(plan: ConversionPlan, *, overwrite: bool = False) -> Conv
             atomic_write(staging_path, content)
         except OSError as exc:
             result.errors.append(f"{path}: {exc}")
-            _cleanup_staged(staged)
+            _cleanup_staged(pending)
             return result
-        staged[path] = staging_path
+        pending[path] = staging_path
 
-    for final, staging_path in staged.items():
+    for final, staging_path in list(pending.items()):
         try:
             staging_path.replace(final)
         except OSError as exc:
             result.errors.append(f"{final}: {exc}")
-            _cleanup_staged(staged)
-            # Anything we already replaced in this phase has already
-            # overwritten the originals — recording it in ``written``
-            # lets the caller surface the partial commit honestly.
+            _cleanup_staged(pending)
             return result
+        del pending[final]
         result.written.append(final)
     return result
 
 
-def _cleanup_staged(staged: dict[Path, Path]) -> None:
-    """Best-effort removal of staged files left behind by a failed batch."""
-    for staging_path in staged.values():
+def _cleanup_staged(pending: dict[Path, Path]) -> None:
+    """Best-effort removal of staging files for paths that weren't committed."""
+    for staging_path in pending.values():
         try:
             staging_path.unlink(missing_ok=True)
         except OSError:

@@ -108,9 +108,10 @@ def emit_bind(bind_type: str, args: str) -> str | None:
             return None
         bind, description = parsed
     else:
-        bind = parse_bind_line(f"{bind_type} = {args}")
-        if bind is None:
+        parsed_bind = parse_bind_line(f"{bind_type} = {args}")
+        if parsed_bind is None:
             return None
+        bind = parsed_bind
         description = None
 
     # ``bindm`` is the mouse variant; combined forms like ``bindmd`` carry

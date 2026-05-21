@@ -2,7 +2,8 @@
 
 import pytest
 
-from hyprland_config import Color, Gradient, Vec2
+from hyprland_config import Color
+from hyprland_config._core._types import Gradient, Vec2
 
 
 class TestColor:

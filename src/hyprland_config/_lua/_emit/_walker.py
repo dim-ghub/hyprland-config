@@ -81,7 +81,7 @@ from hyprland_config._lua._emit._format import (
     split_key,
 )
 from hyprland_config._lua._emit._keywords import format_exec_block
-from hyprland_config._lua._emit._public import STATIC_KEYWORD_EMITTERS
+from hyprland_config._lua._emit._live_apply import STATIC_KEYWORD_EMITTERS
 from hyprland_config._lua._emit._rules import add_block_rule_field
 
 
@@ -89,37 +89,23 @@ from hyprland_config._lua._emit._rules import add_block_rule_field
 class _Group:
     """One topical chunk of output, delimited by Comment lines in the source.
 
-    The walker opens a fresh group whenever it sees a Comment, so a Hyprlang
-    config like ``# Keybinds\\nbind = …`` emits the Lua bind calls under a
-    ``-- Keybinds`` header. Groups carry their own config_tree / extras /
-    exec buckets — assignments don't merge across topical boundaries even
-    when they could (last-write-wins still applies; values just live in
-    separate ``hl.config({...})`` calls).
+    A ``# Keybinds`` line opens a fresh group so the following binds emit
+    under a ``-- Keybinds`` header in their own ``hl.config`` call — last-
+    write-wins still applies across groups.
     """
 
     header: str | None = None
     config_tree: dict[str, Any] = field(default_factory=dict)
     extras: list[str] = field(default_factory=list)
-    # Startup-only (``exec-once``) and shutdown-only (``exec-shutdown``)
-    # commands collect here so the assembler can wrap each list in one
-    # ``hl.on(event, function() … end)`` block. ``exec`` (every-reload)
-    # entries skip these buckets and go straight into ``extras`` — they
-    # belong at top-level so file re-evaluation on reload re-runs them.
+    # ``exec`` runs on every reload, so it goes into ``extras``; ``exec-once``
+    # and ``exec-shutdown`` collect here so the assembler can wrap each list
+    # in one ``hl.on(event, function() … end)`` block.
     exec_once: list[str] = field(default_factory=list)
     exec_shutdown: list[str] = field(default_factory=list)
 
 
 @dataclass
 class _SubmapScope:
-    """An open ``submap = NAME`` block being collected.
-
-    Hyprlang submaps run from a ``submap = NAME`` declaration until the next
-    ``submap = reset`` (or the end of the document). Every bind in that
-    range belongs inside ``hl.define_submap(NAME, function() … end)``; the
-    rendered ``hl.bind(...)`` strings accumulate in ``body`` and get wrapped
-    when the closing ``reset`` fires.
-    """
-
     name: str
     body: list[str] = field(default_factory=list)
 
@@ -128,12 +114,9 @@ class _SubmapScope:
 class _CondBranch:
     """One branch of a translated conditional block.
 
-    ``lua_expr`` is the Lua source for the branch's condition, or ``None``
-    for an ``else`` branch. ``lines`` buffers the body until the matching
-    ``endif`` fires — at that point the body is re-walked through a fresh
-    sub-state to produce the Lua statements that go inside the branch.
-    ``boundary`` holds the directive line that opened the branch so the
-    untranslatable-fallback path can re-emit the whole block verbatim.
+    ``lua_expr`` is the branch's Lua condition (``None`` for ``else``).
+    ``boundary`` keeps the source directive so the untranslatable-fallback
+    path can re-emit the whole block verbatim.
     """
 
     lua_expr: str | None
@@ -145,13 +128,10 @@ class _CondBranch:
 class _CondScope:
     """A single ``# hyprlang if … endif`` block being collected.
 
-    ``branches`` grows as ``elif``/``else`` arrive; the last entry is the
-    one currently accumulating lines. ``depth`` counts nested ``if`` blocks
-    buffered into the current branch — we only consume a directive at depth
-    zero, so a nested ``endif`` doesn't accidentally close the outer scope.
-    ``untranslatable`` flips when any branch's expression can't be mapped
-    to Lua; the whole block then surfaces verbatim in the manual-conversion
-    list instead of producing wrong Lua.
+    ``depth`` counts nested ``if`` blocks so a nested ``endif`` doesn't
+    accidentally close the outer scope. ``untranslatable`` flips when any
+    branch's expression can't be mapped to Lua — the whole block then
+    surfaces verbatim in the manual-conversion list.
     """
 
     branches: list[_CondBranch] = field(default_factory=list)
@@ -163,18 +143,11 @@ class _CondScope:
 class _EmitState:
     """Accumulator for everything we've emitted while walking the document.
 
-    ``groups`` always holds at least one group — the leading unnamed group
-    that collects content before any comment is seen. ``skipped`` is global
-    rather than per-group because the trailing manual-conversion block is
-    one list for the whole file, not per topical section.
-
-    ``cond_stack`` tracks active ``# hyprlang if`` scopes for buffering
-    until each matching ``endif``. ``referenced_vars`` collects ``$VAR``
-    names that appear in conditional expressions so :func:`_assemble_lua`
-    can emit ``local NAME = "value"`` declarations at the top of the
-    output — the rest of the emitter still inline-expands ``$VAR`` at use
-    sites, so this only surfaces variables that the conditional logic
-    actually needs at Lua runtime.
+    ``referenced_vars`` collects ``$VAR`` names that appear in conditional
+    expressions so :func:`_assemble_lua` can emit ``local NAME = "value"``
+    declarations at the top — the rest of the emitter inline-expands
+    ``$VAR`` at use sites, so this only surfaces variables the conditional
+    logic actually needs at Lua runtime.
     """
 
     groups: list[_Group] = field(default_factory=lambda: [_Group()])
@@ -196,12 +169,9 @@ class _EmitState:
 class LuaFile:
     """One ``.lua`` file produced by :func:`serialize_lua_tree`.
 
-    ``path`` is the resolved output ``.lua`` path; ``source_path`` is
-    the originating ``.conf`` (the input to the emitter). ``unmapped``
-    lists the original Hyprlang lines from this file that the emitter
-    couldn't translate — they're absent from ``content`` (other than
-    as the trailing manual-conversion comment block) and the user needs
-    to port them by hand.
+    ``unmapped`` lists the original Hyprlang lines that the emitter couldn't
+    translate. They surface as the trailing manual-conversion comment block
+    in ``content`` and the user needs to port them by hand.
     """
 
     path: Path
@@ -210,7 +180,7 @@ class LuaFile:
     unmapped: list[str]
 
 
-def serialize_lua(doc: Document, *, emit_migration_markers: bool = True) -> str:
+def serialize_lua(doc: Document) -> str:
     """Render *doc* as a single Lua config string.
 
     Walks the document in Hyprland's evaluation order — ``source = …``
@@ -221,26 +191,17 @@ def serialize_lua(doc: Document, *, emit_migration_markers: bool = True) -> str:
     banner — consumers brand their output via Comment nodes if they want
     one.
 
-    ``emit_migration_markers`` is accepted for backwards compatibility but
-    is now a no-op. It used to control the ``-- TODO: was exec-once``
-    suffix on translated ``exec-once`` shell commands; that hint existed
-    because the emitter wrapped both ``exec`` and ``exec-once`` in
-    ``hl.on("hyprland.start", …)`` and lost the distinction. The emitter
-    now keeps the two apart (``exec`` emits at top level, ``exec-once``
-    in the ``hl.on`` block), so the marker isn't needed.
-
     Use :func:`serialize_lua_tree` instead when you want to preserve the
     original ``hyprland.conf.d/*.conf`` split as separate ``.lua`` files
     bridged by ``dofile()`` calls.
     """
-    del emit_migration_markers
     state = _EmitState()
     for owning_doc, line in doc.iter_lines(recursive=True):
         _process_line(line, state, owning_doc)
     return _assemble_lua(state)
 
 
-def serialize_lua_tree(doc: Document, *, emit_migration_markers: bool = True) -> list[LuaFile]:
+def serialize_lua_tree(doc: Document) -> list[LuaFile]:
     """Emit one Lua file per parsed sub-document, mirroring source structure.
 
     Returns one :class:`LuaFile` per document reached via ``source = …``;
@@ -258,17 +219,13 @@ def serialize_lua_tree(doc: Document, *, emit_migration_markers: bool = True) ->
     parent assignment that comes *after* a ``source`` directive overriding
     the same key in the child, prefer :func:`serialize_lua` so the merge
     happens across the whole tree in evaluation order.
-
-    See :func:`serialize_lua` for the meaning of ``emit_migration_markers``.
     """
-    del emit_migration_markers
     output: list[LuaFile] = []
     _emit_doc_tree(doc, output)
     return output
 
 
 def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
-    """Recursively render *doc* and its sourced children into *output*."""
     state = _EmitState()
     for line in doc.lines:
         if isinstance(line, Source):
@@ -296,12 +253,10 @@ def _emit_doc_tree(doc: Document, output: list[LuaFile]) -> None:
 def _conf_path_to_lua(path: Path | None) -> Path | None:
     """Map a Hyprlang config path to its ``.lua`` output path.
 
-    The file's own ``.conf`` suffix becomes ``.lua``. Any parent directory
-    whose name ends in ``.conf.d`` — the standard Unix "drop-in include"
-    convention Hyprland configs use a lot — also gets remapped to
-    ``.lua.d``. This stops Hyprlang configs that wildcard-source the dir
-    (``source = ~/.config/hypr/hyprland.conf.d/*``) from picking up the
-    new ``.lua`` files and trying to parse them as Hyprlang.
+    Renames the ``.conf`` suffix to ``.lua`` and remaps any parent
+    ``X.conf.d`` directory to ``X.lua.d`` — stops a wildcard
+    ``source = ~/.config/hypr/hyprland.conf.d/*`` from picking up the new
+    ``.lua`` siblings and trying to parse them as Hyprlang.
     """
     if path is None:
         return None
@@ -310,7 +265,6 @@ def _conf_path_to_lua(path: Path | None) -> Path | None:
 
 
 def _remap_d_dir(name: str) -> str:
-    """Translate a single path component: ``X.conf.d`` → ``X.lua.d``."""
     if name.endswith(".conf.d"):
         return name[: -len(".conf.d")] + ".lua.d"
     return name
@@ -367,25 +321,12 @@ def _drain_open_conditionals(state: _EmitState) -> None:
 def _format_var_preamble(variables: dict[str, str]) -> str:
     """Render ``local var_NAME = …`` lines for each referenced variable.
 
-    Values flow through the same :func:`coerce_value` / :func:`format_value`
-    pipeline the inline assignment path uses, so numeric literals emit as
-    Lua numbers (``local var_size = 10``), bool words as booleans
-    (``local var_enabled = true``), gradients as structured tables, and
-    everything else as quoted strings. Values that themselves contain
-    ``$other`` references re-expand through the marker pipeline so
-    ``$accent = $primary`` emits as ``local var_accent = var_primary``.
-    Transitive deps are already in *variables* (the walker registers them
-    at scan time).
-
-    Conditional comparisons compensate for the typed locals by wrapping
-    string-equality LHS in ``tostring(...)`` — see
-    :func:`hyprland_config._lua._emit._conditional.translate_expression`.
-    Numeric comparisons keep their pre-existing ``tonumber(...)`` wrap.
-
-    Insertion order is preserved; transitive deps surface after the
-    variable that referenced them. Lua tolerates this so long as no
-    declaration is read at *initialisation* time — locals are looked up
-    when the call site runs, not when the local is declared.
+    Values flow through the same coercion as the inline assignment path —
+    numbers emit as Lua numbers, bool words as booleans, gradients as
+    structured tables, everything else as quoted strings. Insertion order
+    is preserved; transitive deps surface after the variable that
+    referenced them. Lua tolerates this because locals are looked up at
+    call time, not at declaration time.
     """
     lines: list[str] = []
     for name, value in variables.items():
@@ -576,7 +517,6 @@ def render_rule_lua(rule: Rule) -> str:
 
 
 def _emit_rule(rule: Rule, state: _EmitState) -> None:
-    """Append :func:`render_rule_lua` output to the active group's extras."""
     state.current.extras.append(render_rule_lua(rule))
 
 
@@ -613,7 +553,6 @@ def _try_translate_hyprctl_dispatch(cmd: str) -> str | None:
 
 
 def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> None:
-    """Route a Keyword line to the right accumulator or fallback bucket."""
     name = line.key
     # Variables like ``$mainMod`` only resolve inside the document that
     # defined them, so we use the owning doc's scope. Marker-substitute
@@ -705,7 +644,6 @@ def _handle_submap_directive(args: str, state: _EmitState) -> None:
 
 
 def _close_submap(state: _EmitState) -> None:
-    """Finalize the active submap into an ``hl.define_submap(...)`` call."""
     submap = state.submap
     if submap is None:
         return
@@ -812,14 +750,7 @@ def _open_branch(
 
 @dataclass
 class _RawLua(Line):
-    """Synthetic line that carries pre-rendered Lua for a nested conditional.
-
-    When a nested ``# hyprlang if … endif`` closes inside an outer scope's
-    branch, the rendered Lua text needs to land in the outer branch's body.
-    Wrapping it in a ``Line`` subclass keeps the outer branch's ``lines``
-    list homogeneous so the sub-walker can pass over it without special
-    casing in every isinstance check.
-    """
+    """Pre-rendered Lua from a nested conditional, parked in the outer branch."""
 
 
 def _emit_conditional_block(
@@ -882,9 +813,5 @@ def _render_state_flat(state: _EmitState) -> str:
 
 
 def _indent_block(text: str, prefix: str) -> str:
-    """Prefix every non-empty line of *text* with *prefix*.
-
-    Empty lines stay empty (no trailing whitespace on blank rows) so the
-    rendered Lua reads cleanly when the branch body has internal spacing.
-    """
+    # Empty lines stay empty (no trailing whitespace on blank rows).
     return "".join((prefix + ln if ln.strip() else ln) for ln in text.splitlines(keepends=True))

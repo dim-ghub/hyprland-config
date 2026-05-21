@@ -18,12 +18,10 @@ _GLOB_CHARS = frozenset(("*", "?", "["))
 
 
 def _has_glob_chars(pattern: str) -> bool:
-    """Check if a string contains glob metacharacters."""
     return any(c in _GLOB_CHARS for c in pattern)
 
 
 def _format_kv_line(indent: str, key: str, value: str, inline_comment: str = "") -> str:
-    """Build a formatted key = value line string."""
     comment_suffix = f" {inline_comment}" if inline_comment else ""
     return f"{indent}{key} = {value}{comment_suffix}\n"
 

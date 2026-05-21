@@ -39,12 +39,14 @@ from hyprland_config._core._model import (
     Source,
     Variable,
 )
+from hyprland_config._core._rule_split import split_top_level
 from hyprland_config._core._rules import (
     LAYER_BOOL_EFFECTS,
+    LAYERRULE_V3_VERSION,
     V3_BOOL_EFFECTS,
     V3_BOOL_MATCHERS,
+    WINDOWRULE_V3_VERSION,
 )
-from hyprland_config._core._split import split_top_level
 from hyprland_config._core._types import (
     Color,
     Gradient,
@@ -52,7 +54,11 @@ from hyprland_config._core._types import (
     normalize_gradient_string,
     parse_version,
 )
-from hyprland_config._core._values import coerce_config_value, value_to_conf
+from hyprland_config._core._values import (
+    coerce_config_value,
+    parse_hyprlang_bool,
+    value_to_conf,
+)
 from hyprland_config._core._writer import atomic_write
 
 __all__ = [
@@ -77,6 +83,7 @@ __all__ = [
     "KeyValueLine",
     "Keyword",
     "LAYER_BOOL_EFFECTS",
+    "LAYERRULE_V3_VERSION",
     "Line",
     "Rule",
     "SectionClose",
@@ -86,6 +93,7 @@ __all__ = [
     "V3_BOOL_MATCHERS",
     "Variable",
     "Vec2",
+    "WINDOWRULE_V3_VERSION",
     "atomic_write",
     "coerce_config_value",
     "evaluate_expression",
@@ -93,6 +101,7 @@ __all__ = [
     "expand_value",
     "get_styles_for",
     "normalize_gradient_string",
+    "parse_hyprlang_bool",
     "parse_version",
     "split_top_level",
     "value_to_conf",

@@ -40,7 +40,6 @@ def _extract_address_selector(arg: str) -> tuple[str, str | None]:
 
 
 def _dispatch_workspace(arg: str) -> str:
-    """``workspace, N`` / ``workspace, e+1`` / ``workspace, name:foo``."""
     return f"hl.dsp.focus({{ workspace = {format_value(coerce_value(arg), 0)} }})"
 
 
@@ -67,7 +66,6 @@ DIR_MAP = {"l": "left", "r": "right", "u": "up", "d": "down"}
 
 
 def _dispatch_movefocus(arg: str) -> str | None:
-    """``movefocus, dir`` where ``dir`` is one of l/r/u/d (or the long form)."""
     direction = DIR_MAP.get(arg.strip().lower(), arg.strip().lower())
     if direction not in ("left", "right", "up", "down"):
         return None
@@ -203,35 +201,33 @@ def _dispatch_resizewindowpixel(arg: str) -> str | None:
 
 
 def _dispatch_resizewindow(arg: str, *, mouse: bool = False) -> str | None:
-    """``resizewindow`` (bindm = interactive resize) / ``resizewindow, x y``."""
-    if not arg.strip():
-        return "hl.dsp.window.resize()" if mouse else None
-    return None  # Active resize with absolute/relative pixel args needs manual review.
+    """``resizewindow`` (bindm = interactive resize) — the only shape we translate.
+
+    Active resize with absolute/relative pixel args (``resizewindow, 100 100``)
+    has no clean Lua counterpart and is left to manual conversion.
+    """
+    if mouse and not arg.strip():
+        return "hl.dsp.window.resize()"
+    return None
 
 
 def _dispatch_togglespecialworkspace(arg: str) -> str:
-    """``togglespecialworkspace[, name]`` → ``hl.dsp.workspace.toggle_special(name)``."""
-    name = arg.strip()
-    return f"hl.dsp.workspace.toggle_special({quote_string(name)})"
+    return f"hl.dsp.workspace.toggle_special({quote_string(arg.strip())})"
 
 
 def _dispatch_focuswindow(arg: str) -> str:
-    """``focuswindow, addr`` → ``hl.dsp.focus({ window = "addr" })``."""
     return f"hl.dsp.focus({{ window = {quote_string(arg.strip())} }})"
 
 
 def _dispatch_focusmonitor(arg: str) -> str:
-    """``focusmonitor, name`` → ``hl.dsp.focus({ monitor = "name" })``."""
     return f"hl.dsp.focus({{ monitor = {quote_string(arg.strip())} }})"
 
 
 def _dispatch_movecurrentworkspacetomonitor(arg: str) -> str:
-    """``movecurrentworkspacetomonitor, MONITOR`` → ``hl.dsp.workspace.move({...})``."""
     return f"hl.dsp.workspace.move({{ monitor = {quote_string(arg.strip())} }})"
 
 
 def _dispatch_moveworkspacetomonitor(arg: str) -> str | None:
-    """``moveworkspacetomonitor, WORKSPACE MONITOR`` → ``hl.dsp.workspace.move({...})``."""
     parts = arg.strip().split(None, 1)
     if len(parts) != 2:
         return None
@@ -267,7 +263,6 @@ def _dispatch_setprop(arg: str) -> str | None:
 
 
 def _dispatch_swapwindow(arg: str) -> str | None:
-    """``swapwindow, DIR`` → ``hl.dsp.window.swap({ direction = "DIR" })``."""
     direction = DIR_MAP.get(arg.strip().lower(), arg.strip().lower())
     if direction in ("left", "right", "up", "down"):
         return f'hl.dsp.window.swap({{ direction = "{direction}" }})'
@@ -275,12 +270,10 @@ def _dispatch_swapwindow(arg: str) -> str | None:
 
 
 def _dispatch_tagwindow(arg: str) -> str:
-    """``tagwindow, TAG`` → ``hl.dsp.window.tag({ tag = "TAG" })``."""
     return f"hl.dsp.window.tag({{ tag = {quote_string(arg.strip())} }})"
 
 
 def _dispatch_alterzorder(arg: str) -> str | None:
-    """``alterzorder, top/bottom`` → ``hl.dsp.window.alter_zorder({ mode = … })``."""
     mode = arg.strip().lower()
     if mode in ("top", "bottom"):
         return f'hl.dsp.window.alter_zorder({{ mode = "{mode}" }})'

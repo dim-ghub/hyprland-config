@@ -161,14 +161,12 @@ class AnimationData:
     style: str = ""
 
     def body(self) -> str:
-        """Value half: ``NAME,onoff,speed,curve[,style]`` (no keyword prefix)."""
         val = f"{self.name},{int(self.enabled)},{self.speed},{self.curve}"
         if self.style:
             val += f",{self.style}"
         return val
 
     def to_line(self) -> str:
-        """Full config line: ``animation = NAME,onoff,speed,curve[,style]``."""
         return f"animation = {self.body()}"
 
     @classmethod
@@ -209,12 +207,10 @@ class BezierData:
     points: tuple[float, float, float, float]
 
     def body(self) -> str:
-        """Value half: ``NAME,x0,y0,x1,y1`` (no keyword prefix)."""
         x0, y0, x1, y1 = self.points
         return f"{self.name},{x0},{y0},{x1},{y1}"
 
     def to_line(self) -> str:
-        """Full config line: ``bezier = NAME,x0,y0,x1,y1``."""
         return f"bezier = {self.body()}"
 
     @classmethod

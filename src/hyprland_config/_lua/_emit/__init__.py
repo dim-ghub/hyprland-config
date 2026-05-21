@@ -11,14 +11,15 @@ Public surface lives here; the work is split across focused modules:
 - :mod:`._bind` — bind family (``bind`` / ``binde`` / ``bindm`` / …).
 - :mod:`._rules` — windowrule / layerrule / workspace rule emitters.
 - :mod:`._walker` — Document walker that assembles the full ``.lua`` output.
-- :mod:`._public` — single-line emit APIs for live-apply (``hyprctl eval``).
+- :mod:`._live_apply` — single-line emit APIs for live-apply (``hyprctl eval``).
 """
 
-from hyprland_config._lua._emit._public import (
+from hyprland_config._lua._emit._live_apply import (
     define_submap_to_lua,
     dispatch_to_lua,
     emit_keyword_line,
     emit_option_assignment,
+    keyword_to_lua,
 )
 from hyprland_config._lua._emit._walker import (
     LuaFile,
@@ -33,6 +34,7 @@ __all__ = [
     "dispatch_to_lua",
     "emit_keyword_line",
     "emit_option_assignment",
+    "keyword_to_lua",
     "render_rule_lua",
     "serialize_lua",
     "serialize_lua_tree",

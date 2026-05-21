@@ -3,7 +3,8 @@
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from hyprland_config import ParseError, Variable, parse_string, serialize_hyprlang
+from hyprland_config import ParseError, parse_string, serialize_hyprlang
+from hyprland_config._core._model import Variable
 
 # -- Strategies for generating valid Hyprland config fragments --
 

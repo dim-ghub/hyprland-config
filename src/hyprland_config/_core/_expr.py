@@ -43,10 +43,10 @@ def _eval_node(node: ast.AST) -> int | float:
             name = "division" if isinstance(node.op, ast.Div) else "modulo"
             raise ExprError(f"{name} by zero") from None
     if isinstance(node, ast.UnaryOp):
-        op = _UNARY_OPS.get(type(node.op))
-        if op is None:
+        unary = _UNARY_OPS.get(type(node.op))
+        if unary is None:
             raise ExprError(f"unsupported unary operator: {type(node.op).__name__}")
-        return op(_eval_node(node.operand))
+        return unary(_eval_node(node.operand))
     raise ExprError(f"unsupported expression node: {type(node).__name__}")
 
 
@@ -58,13 +58,12 @@ def evaluate_expression(expr: str) -> int | float:
     expr = expr.strip()
     if not expr:
         raise ExprError("empty expression")
+    if expr.count("(") != expr.count(")"):
+        raise ExprError("mismatched parentheses")
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
-        msg = e.msg or str(e)
-        if "never closed" in msg:
-            raise ExprError("missing closing parenthesis") from None
-        raise ExprError(f"invalid expression: {msg}") from None
+        raise ExprError(f"invalid expression: {e.msg or e}") from None
     result = _eval_node(tree.body)
     # Return int when possible for cleaner output
     if isinstance(result, float) and result.is_integer():

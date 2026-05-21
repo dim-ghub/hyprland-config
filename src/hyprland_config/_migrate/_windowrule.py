@@ -9,6 +9,8 @@ into structured :class:`Rule` nodes regardless of source shape
 (single-line ``windowrule = …`` or block-form ``windowrule { … }``).
 """
 
+import re
+
 from hyprland_config._core._model import (
     Assignment,
     Document,
@@ -19,9 +21,14 @@ from hyprland_config._core._model import (
     SectionClose,
     SectionOpen,
 )
-from hyprland_config._core._rules import V3_BOOL_EFFECTS
-from hyprland_config._core._split import split_top_level
-from hyprland_config._migrate._runner import _transform_lines
+from hyprland_config._core._rule_split import split_top_level
+from hyprland_config._core._rules import (
+    V2_TO_V3_EFFECT,
+    V2_TO_V3_MATCHER,
+    V3_BOOL_EFFECTS,
+)
+from hyprland_config._core._values import parse_hyprlang_bool
+from hyprland_config._migrate._helpers import transform_lines
 
 _V2_PREFIXES = ("title:", "class:", "xwayland:", "floating:", "fullscreen:")
 
@@ -50,62 +57,6 @@ _V2_PREFIXES = ("title:", "class:", "xwayland:", "floating:", "fullscreen:")
 # - Negation moved from a leading ``~`` on the matcher to a
 #   ``negative:`` prefix on the value.
 
-# v2 → v3 effect renames. Anything not in this dict is assumed to be
-# the same name in v3 (including custom plugin actions).
-_V2_TO_V3_EFFECT: dict[str, str] = {
-    "noblur": "no_blur",
-    "noshadow": "no_shadow",
-    "noborder": "no_border",
-    "noanim": "no_anim",
-    "nodim": "no_dim",
-    "nofocus": "no_focus",
-    "noinitialfocus": "no_initial_focus",
-    "nofollowmouse": "no_follow_mouse",
-    "noshortcutsinhibit": "no_shortcuts_inhibit",
-    "noscreenshare": "no_screen_share",
-    "novrr": "no_vrr",
-    "norounding": "no_rounding",
-    "nomaxsize": "no_max_size",
-    "stayfocused": "stay_focused",
-    "idleinhibit": "idle_inhibit",
-    "bordercolor": "border_color",
-    "bordersize": "border_size",
-    "maxsize": "max_size",
-    "minsize": "min_size",
-    "suppressevent": "suppress_event",
-    "noclosefor": "no_close_for",
-    "syncfullscreen": "sync_fullscreen",
-    "forcergbx": "force_rgbx",
-    "focusonactivate": "focus_on_activate",
-    "keepaspectratio": "keep_aspect_ratio",
-    "nearestneighbor": "nearest_neighbor",
-    "renderunfocused": "render_unfocused",
-    "scrollmouse": "scroll_mouse",
-    "scrolltouchpad": "scroll_touchpad",
-    "scrollingwidth": "scrolling_width",
-    "allowsinput": "allows_input",
-    "dimaround": "dim_around",
-    "persistentsize": "persistent_size",
-    "fullscreenstate": "fullscreen_state",
-    "roundingpower": "rounding_power",
-}
-
-
-# v2 → v3 matcher key renames. Note ``floating`` → ``float`` and
-# ``pinned`` → ``pin``: in v3 the matcher key is the same word as the
-# corresponding effect, which matches the wiki.
-_V2_TO_V3_MATCHER: dict[str, str] = {
-    "initialClass": "initial_class",
-    "initialTitle": "initial_title",
-    "floating": "float",
-    "pinned": "pin",
-    "xdgtag": "xdg_tag",
-    # ``onworkspace`` collapsed into ``workspace`` in v3.
-    "onworkspace": "workspace",
-    "fullscreenstate": "fullscreen_state",
-}
-
-
 # Full set of known v3 effect names. Used by the corruption-recovery
 # heuristic in :func:`_uncorrupt_v3_pretending_to_be_v2` to decide
 # whether a token after ``title:`` is a real v3 effect (signalling
@@ -127,12 +78,7 @@ def _split_v2_matchers(raw: str) -> list[str]:
 
     v2 accepted commas and whitespace as separators.
     """
-    tokens: list[str] = []
-    for chunk in raw.split(","):
-        for tok in chunk.split():
-            if tok:
-                tokens.append(tok)
-    return tokens
+    return [tok for tok in re.split(r"[\s,]+", raw.strip()) if tok]
 
 
 def _v2_body_to_v3(body: str) -> str:
@@ -154,7 +100,7 @@ def _v2_body_to_v3(body: str) -> str:
 
     # Split the action into name + args (e.g. "size 1920 1080").
     action_name, _, action_args = action.partition(" ")
-    new_name = _V2_TO_V3_EFFECT.get(action_name, action_name)
+    new_name = V2_TO_V3_EFFECT.get(action_name, action_name)
     args = action_args.strip()
     # Boolean effects in v2 had no args; in v3 they require ``on``.
     if not args and new_name in V3_BOOL_EFFECTS:
@@ -173,7 +119,7 @@ def _v2_body_to_v3(body: str) -> str:
             # Unparseable token — preserve verbatim so nothing is lost.
             matcher_tokens.append(("~" if negated else "") + tok)
             continue
-        new_key = _V2_TO_V3_MATCHER.get(key.strip(), key.strip())
+        new_key = V2_TO_V3_MATCHER.get(key.strip(), key.strip())
         new_value = value.strip()
         if negated and new_value:
             new_value = f"negative:{new_value}"
@@ -251,7 +197,7 @@ def migrate_windowrule_v2_to_v3(doc: Document) -> bool:
         line.value = new_value
         line.update_raw()
 
-    return _transform_lines(doc, predicate, transform)
+    return transform_lines(doc, predicate, transform)
 
 
 def migrate_windowrule_v1_to_v2(doc: Document) -> bool:
@@ -289,7 +235,7 @@ def migrate_windowrule_v1_to_v2(doc: Document) -> bool:
         line.value = f"{rule}, title:{window}"
         line.update_raw()
 
-    return _transform_lines(doc, predicate, transform)
+    return transform_lines(doc, predicate, transform)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +302,8 @@ def _collect_block_fields(
         if key == "name":
             name = value
         elif key == "enable":
-            enabled = value.lower() not in ("0", "false", "off", "no")
+            # Default to enabled unless the value is an unambiguous "false" word.
+            enabled = parse_hyprlang_bool(value) is not False
         elif key.startswith("match:"):
             matchers.append((key[len("match:") :].strip(), value))
         elif key:

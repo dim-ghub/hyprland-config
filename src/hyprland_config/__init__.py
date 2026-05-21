@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Any
 
 from hyprland_config._converter import (
     ConversionPlan,
@@ -18,8 +17,10 @@ from hyprland_config._core import (
     ANIMATION_TREE,
     HYPRLAND_NATIVE_CURVES,
     LAYER_BOOL_EFFECTS,
+    LAYERRULE_V3_VERSION,
     V3_BOOL_EFFECTS,
     V3_BOOL_MATCHERS,
+    WINDOWRULE_V3_VERSION,
     AnimationData,
     Assignment,
     BezierData,
@@ -27,25 +28,15 @@ from hyprland_config._core import (
     BlankLine,
     Color,
     Comment,
-    Conditional,
     Document,
-    ErrorLine,
-    ExprError,
-    Gradient,
-    KeyValueLine,
     Keyword,
-    Line,
     Rule,
-    SectionClose,
-    SectionOpen,
     Source,
-    Variable,
-    Vec2,
     atomic_write,
     coerce_config_value,
-    evaluate_expression,
     get_styles_for,
     normalize_gradient_string,
+    parse_hyprlang_bool,
     parse_version,
     split_top_level,
     value_to_conf,
@@ -54,11 +45,11 @@ from hyprland_config._hyprlang import (
     ParseError,
     SourceCycleError,
     is_bind_keyword,
-    is_keyword,
     parse_bind_line,
     parse_file,
     parse_string,
     render_rule_hyprlang,
+    render_rule_live,
     serialize_hyprlang,
 )
 from hyprland_config._lua import (
@@ -66,8 +57,7 @@ from hyprland_config._lua import (
     LuaReaderError,
     define_submap_to_lua,
     dispatch_to_lua,
-    emit_keyword_line,
-    emit_option_assignment,
+    keyword_to_lua,
     load_lua,
     render_rule_lua,
     serialize_lua,
@@ -103,7 +93,7 @@ def parse_to_dict(
 
 def default_config_dir() -> Path:
     """Return ``$XDG_CONFIG_HOME/hypr`` (or ``~/.config/hypr`` if unset)."""
-    xdg = os.environ.get("XDG_CONFIG_HOME") or None
+    xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "hypr"
 
@@ -181,42 +171,17 @@ def load_any(
     return load(target, follow_sources=follow_sources, lenient=lenient)
 
 
-def serialize_any(doc: Document, path: str | Path, *, emit_migration_markers: bool = True) -> str:
+def serialize_any(doc: Document, path: str | Path) -> str:
     """Render *doc* in the format implied by *path*'s suffix.
 
     Symmetric counterpart to :func:`load_any` — ``.lua`` paths route
     through :func:`serialize_lua`, anything else through
     :func:`serialize_hyprlang`. The path is inspected only for its
     suffix; no I/O is performed.
-
-    ``emit_migration_markers`` is accepted for backwards compatibility and
-    forwarded to :func:`serialize_lua`, but is now a no-op (see that
-    function's docstring for the history).
     """
     if Path(path).suffix == ".lua":
-        return serialize_lua(doc, emit_migration_markers=emit_migration_markers)
+        return serialize_lua(doc)
     return serialize_hyprlang(doc)
-
-
-def keyword_to_lua(key: str, value: Any) -> str:
-    """Translate a single ``key = value`` line to its Lua ``hl.*`` form.
-
-    Suitable as the body of a ``hyprctl eval``. Keywords (``bind``,
-    ``env``, ``monitor``, …) route to their dedicated emitter; option
-    assignments (``general:gaps_in``, …) emit a single ``hl.config({...})``
-    call with the value nested at the right depth.
-
-    Raises ``ValueError`` when the keyword has no Lua equivalent the
-    emitter can produce (``submap``, an unmapped dispatcher, a malformed
-    line).
-    """
-    value_str = str(value)
-    if is_keyword(key):
-        snippet = emit_keyword_line(key, value_str)
-        if snippet is None:
-            raise ValueError(f"No Lua mapping for keyword {key!r} = {value_str!r}")
-        return snippet
-    return emit_option_assignment(key, value_str)
 
 
 __all__ = [
@@ -231,33 +196,25 @@ __all__ = [
     "BlankLine",
     "Color",
     "Comment",
-    "Conditional",
     "ConfigDeprecation",
     "ConversionPlan",
     "ConversionResult",
     "Document",
-    "ErrorLine",
-    "ExprError",
-    "Gradient",
     "HYPRLAND_NATIVE_CURVES",
     "Keyword",
-    "KeyValueLine",
     "LAYER_BOOL_EFFECTS",
-    "Line",
+    "LAYERRULE_V3_VERSION",
     "LuaFile",
     "LuaReaderError",
     "MigrationResult",
     "ParseError",
     "Rule",
-    "SectionClose",
-    "SectionOpen",
     "Source",
     "SourceCycleError",
     "UnmappedLine",
     "V3_BOOL_EFFECTS",
     "V3_BOOL_MATCHERS",
-    "Variable",
-    "Vec2",
+    "WINDOWRULE_V3_VERSION",
     "analyze_conversion",
     "atomic_write",
     "check_deprecated",
@@ -268,11 +225,9 @@ __all__ = [
     "default_lua_entrypoint",
     "define_submap_to_lua",
     "dispatch_to_lua",
-    "evaluate_expression",
     "execute_conversion",
     "get_styles_for",
     "is_bind_keyword",
-    "is_keyword",
     "keyword_to_lua",
     "load",
     "load_any",
@@ -280,13 +235,14 @@ __all__ = [
     "migrate",
     "normalize_gradient_string",
     "parse_bind_line",
-    "parse_file",
+    "parse_hyprlang_bool",
     "parse_string",
     "parse_to_dict",
     "parse_version",
-    "serialize_any",
     "render_rule_hyprlang",
+    "render_rule_live",
     "render_rule_lua",
+    "serialize_any",
     "serialize_hyprlang",
     "serialize_lua",
     "serialize_lua_tree",

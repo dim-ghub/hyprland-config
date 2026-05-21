@@ -1,18 +1,19 @@
 """Hyprlang bind-line text parsing — recognise and decompose ``bind = …`` lines."""
 
-import re
-
 from hyprland_config._core._bind import BindData
 
-# Hyprland generates bind variants combinatorially from flag chars
-# (e, l, r, n, m, t, i, s, d, p). A regex covers all current and future
-# combinations without needing manual enumeration.
-_BIND_RE = re.compile(r"^bind[elnrmtisdp]*$")
+# Hyprland accepts ``bind`` plus any unique subset of these suffix chars
+# (e/l/n/r/m/t/i/s/d/p). Each flag may appear at most once and order doesn't
+# matter; we accept the bare keyword too.
+_BIND_FLAGS = frozenset("elnrmtisdp")
 
 
 def is_bind_keyword(name: str) -> bool:
     """Return True if *name* is a bind-variant keyword (bind, binde, bindm …)."""
-    return _BIND_RE.match(name) is not None
+    if not name.startswith("bind"):
+        return False
+    suffix = name[4:]
+    return len(set(suffix)) == len(suffix) and set(suffix) <= _BIND_FLAGS
 
 
 def parse_bind_line(line: str) -> BindData | None:

@@ -5,6 +5,28 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-21
+
+### Added
+
+- `render_rule_hyprlang(rule, version=...)` and `serialize_hyprlang(doc, version=...)` accept the running Hyprland version and emit the grammar that compositor understands — v3 `windowrule = match:…` for 0.53+ (0.54+ for layerrules) and the older effect-first form (`windowrulev2 = effect, class:regex` / `layerrule = effect, namespace`) below those boundaries. `version=None` (the default) keeps emitting v3
+- `render_rule_live(rule, version=...)` returns the `(keyword, value)` pairs to push via `hyprctl keyword` for live-apply — a single pair for v3, one per effect on the pre-v3 grammar (which is one-effect-per-line)
+- Public `WINDOWRULE_V3_VERSION` / `LAYERRULE_V3_VERSION` constants and the canonical v2↔v3 rename maps (`V2_TO_V3_EFFECT`, `V2_TO_V3_MATCHER`, `V3_TO_V2_EFFECT`, `V3_TO_V2_MATCHER`, `V3_TO_LEGACY_LAYER_EFFECT`); the v2→v3 migration shares them so the round-trip stays consistent
+- `parse_hyprlang_bool(value)` in `hyprland_config` — the single source of truth for translating Hyprlang's boolean vocabulary (`true`/`yes`/`on`/`1` and their negatives) into Python bools. Returns `None` when the value isn't bool-shaped, so callers pick the fallback explicitly
+- `HYPRLAND_CONFIG_LUA` environment variable overrides the Lua interpreter the reader probes for; the default search now covers `lua5.5` and `lua5.2` alongside the existing `lua` / `lua5.4` / `lua5.3`
+
+### Changed
+
+- **Breaking:** dropped the deprecated `emit_migration_markers` parameter from `serialize_lua`, `serialize_lua_tree`, and `serialize_any`. It was a no-op since 0.6.6 — call sites should remove the kwarg
+- **Breaking:** trimmed the top-level `hyprland_config` re-exports to the API actually consumed downstream. Internal AST nodes (`KeyValueLine`, `Line`, `Variable`, `Conditional`, `ErrorLine`, `SectionOpen`, `SectionClose`), value types (`Vec2`, `Gradient`), and helpers (`evaluate_expression`, `ExprError`, `is_keyword`, `BIND_FLAG_MAP`, `parse_file`) are now reachable only via their owning submodules
+
+### Fixed
+
+- Hyprlang serializer now uses `LAYER_BOOL_EFFECTS` (not `V3_BOOL_EFFECTS`) when auto-filling `on` for bare layer effects; `blur`/`xray`/`dim_around`/… no longer render without their required value
+- `Color.parse` rejects strings with trailing garbage instead of silently swallowing them (the regex was anchored with `match` rather than `fullmatch`)
+- `evaluate_expression("(1 + 2")` raises `ExprError("mismatched parentheses")` via a structural paren-count check instead of relying on CPython's English error wording
+- `is_bind_keyword("bindeeeee")` now returns `False`; the matcher accepts each suffix flag char at most once
+
 ## [0.8.0] - 2026-05-20
 
 ### Fixed
@@ -247,6 +269,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.0
 [0.8.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.8.0
 [0.7.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.7.0
 [0.6.6]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.6.6

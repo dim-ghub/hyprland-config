@@ -10,13 +10,11 @@ from hyprland_config import (
     Comment,
     Keyword,
     ParseError,
-    SectionClose,
-    SectionOpen,
     Source,
-    Variable,
     parse_string,
     serialize_hyprlang,
 )
+from hyprland_config._core._model import SectionClose, SectionOpen, Variable
 
 # ---------------------------------------------------------------------------
 # Round-trip: serialize(parse(text)) == text
@@ -271,8 +269,6 @@ class TestInlineComments:
         # every `$mainMod` reference downstream resolved to the broken
         # `"ALT # Sets main modifier"` string.
         doc = parse_string("$mainMod = ALT # Sets main modifier\n")
-        from hyprland_config import Variable
-
         node = doc.lines[0]
         assert isinstance(node, Variable)
         assert node.value == "ALT"

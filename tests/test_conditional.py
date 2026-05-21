@@ -2,10 +2,10 @@
 
 from hyprland_config import (
     Comment,
-    Conditional,
     parse_string,
     serialize_hyprlang,
 )
+from hyprland_config._core._model import Conditional
 
 
 class TestConditionalParsing:

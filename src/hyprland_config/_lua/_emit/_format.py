@@ -13,6 +13,7 @@ from typing import Any
 
 from hyprland_config._core._expr import substitute_variables_with_markers
 from hyprland_config._core._types import Color, Gradient
+from hyprland_config._core._values import parse_hyprlang_bool
 
 INDENT = "    "
 
@@ -62,10 +63,10 @@ def expand_value_lua(text: str, variables: dict[str, str], referenced: dict[str,
 def lua_var_name(hyprlang_name: str) -> str:
     """Map a Hyprlang variable name to a safe Lua identifier.
 
-    Always prefixed with ``var_`` so reserved Lua keywords (``$end``,
-    ``$function``) and leading-digit names (``$1mod``) produce valid
-    identifiers without a per-name escape table. Non-alphanumeric chars
-    (Hyprlang allows hyphens) collapse to underscore.
+    The ``var_`` prefix sidesteps reserved Lua keywords (``$end``,
+    ``$function``) and leading-digit names (``$1mod``) without a per-name
+    escape table. Non-alphanumeric chars (Hyprlang allows hyphens) collapse
+    to underscore.
     """
     safe = _NON_IDENT_RE.sub("_", hyprlang_name)
     return f"{LUA_VAR_PREFIX}{safe}"
@@ -76,7 +77,6 @@ def has_var_marker(s: str) -> bool:
 
 
 def _split_marker_string(s: str) -> list[tuple[str, str]]:
-    """Tokenise *s* into (kind, value) pairs where kind is 'var' or 'lit'."""
     parts: list[tuple[str, str]] = []
     i = 0
     while i < len(s):
@@ -118,19 +118,13 @@ def to_lua_expr(s: str) -> LuaExpr:
     return LuaExpr(" .. ".join(fragments))
 
 
-# Hyprlang accepts these (case-insensitive) for boolean-typed options;
-# Hyprland's Lua API only accepts native Lua `true`/`false`, so we coerce.
-# ``0``/``1`` are deliberately not on this list — plenty of non-bool options
-# legitimately take small integers, and without schema awareness we can't tell
-# which is which.
-_BOOL_TRUE_WORDS = frozenset({"true", "yes", "on"})
-_BOOL_FALSE_WORDS = frozenset({"false", "no", "off"})
-
 # Hyprland's Hyprlang parser reads a boolean field by looking at the leading
 # token only — ``enabled = yes, please :)`` is accepted as truthy because
 # the value starts with ``yes``. The ``\b`` boundary anchor stops the regex
 # from mis-coercing ``yesterday``, ``offer``, ``nope``, ``oneshot``, etc.,
 # where a bool word appears as a prefix but the field is genuinely a string.
+# ``0``/``1`` are deliberately excluded — plenty of non-bool options legitimately
+# take small integers, and without schema awareness we can't tell which is which.
 _LENIENT_BOOL_RE = re.compile(r"^(true|false|yes|no|on|off)\b", re.IGNORECASE)
 
 # Lua reserved words can't be used as bare-key identifiers in table literals.
@@ -244,7 +238,7 @@ def coerce_value(s: str) -> Any:
         return float(stripped)
     bool_match = _LENIENT_BOOL_RE.match(stripped)
     if bool_match is not None:
-        return bool_match.group(1).lower() in _BOOL_TRUE_WORDS
+        return parse_hyprlang_bool(bool_match.group(1))
     gradient = _try_gradient(stripped)
     if gradient is not None:
         return gradient
@@ -399,11 +393,8 @@ def split_csv(args: str) -> list[str]:
 
 
 def emit_exec_cmd_call(value: str) -> str:
-    """``hl.exec_cmd("…")`` — the imperative form, not the dispatcher.
-
-    ``hl.dsp.exec_cmd`` returns a dispatcher object meant for ``hl.bind``;
-    this is the bare call used at top level or inside an ``hl.on`` block.
-    """
+    # ``hl.dsp.exec_cmd`` returns a dispatcher object meant for ``hl.bind``;
+    # this is the imperative form used at top level or inside an ``hl.on`` block.
     return f"hl.exec_cmd({quote_string(value)})"
 
 

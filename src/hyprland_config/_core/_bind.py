@@ -38,7 +38,6 @@ class BindData:
 
     @property
     def mods_str(self) -> str:
-        """Space-joined modifier string."""
         return " ".join(self.mods)
 
     def to_line(self) -> str:

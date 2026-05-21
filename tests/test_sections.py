@@ -4,10 +4,9 @@ from hyprland_config import (
     Assignment,
     BlankLine,
     Comment,
-    SectionClose,
-    SectionOpen,
     parse_string,
 )
+from hyprland_config._core._model import SectionClose, SectionOpen
 
 SAMPLE_CONFIG = """\
 $mainMod = SUPER

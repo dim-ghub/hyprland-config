@@ -8,9 +8,10 @@ the document walker because it spans multiple input lines.
 
 from typing import Any
 
-from hyprland_config._core._split import split_top_level
+from hyprland_config._core._rule_split import split_top_level
+from hyprland_config._core._values import parse_hyprlang_bool
 from hyprland_config._lua._emit._format import coerce_value, format_table, split_csv
-from hyprland_config._lua._workspace_fields import hyprlang_field_to_lua
+from hyprland_config._lua._workspace_rules import hyprlang_field_to_lua
 
 
 def coerce_rule_value(value: str) -> Any:
@@ -20,11 +21,8 @@ def coerce_rule_value(value: str) -> Any:
     action and its value live in the same token; block syntax separates
     them across two lines so we need the same translation here.
     """
-    stripped = value.strip()
-    if stripped.lower() == "on":
-        return True
-    if stripped.lower() == "off":
-        return False
+    if value.strip().lower() in ("on", "off"):
+        return parse_hyprlang_bool(value)
     return coerce_value(value)
 
 
@@ -47,7 +45,9 @@ def add_block_rule_field(buffer: dict[str, Any], key: str, value: str) -> None:
             match[prop] = coerce_rule_value(value)
         return
     if key == "enable":
-        buffer["enabled"] = value.strip().lower() not in ("0", "false", "off", "no")
+        # Anything we can't read as a bool is treated as enabled — same
+        # permissive default Hyprland uses for malformed block fields.
+        buffer["enabled"] = parse_hyprlang_bool(value) is not False
         return
     buffer[key] = coerce_rule_value(value)
 

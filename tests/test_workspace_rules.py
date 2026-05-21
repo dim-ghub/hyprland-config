@@ -20,7 +20,7 @@ from hyprland_config import (
     serialize_hyprlang,
     serialize_lua,
 )
-from hyprland_config._lua._workspace_fields import (
+from hyprland_config._lua._workspace_rules import (
     hyprlang_field_to_lua,
     lua_field_to_hyprlang,
 )

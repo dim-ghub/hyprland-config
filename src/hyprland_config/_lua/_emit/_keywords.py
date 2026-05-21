@@ -7,6 +7,7 @@ walker and by the single-line public ``emit_keyword_line`` API.
 
 from typing import Any
 
+from hyprland_config._core._values import parse_hyprlang_bool
 from hyprland_config._lua._emit._format import (
     INDENT,
     coerce_value,
@@ -81,11 +82,6 @@ def emit_bezier(args: str) -> str:
     )
 
 
-# Hyprlang's animation "enabled" flag accepts a few synonyms; treat them all
-# as truthy so the emitted Lua boolean matches user intent.
-_ANIMATION_TRUE = frozenset({"1", "true", "yes", "on"})
-
-
 def emit_animation(args: str) -> str:
     """``animation = NAME, ONOFF, SPEED, CURVE [, STYLE]`` → ``hl.animation({…})``."""
     parts = split_csv(args)
@@ -93,7 +89,7 @@ def emit_animation(args: str) -> str:
         return f"-- malformed animation: {args}"
     table: dict[str, Any] = {"leaf": parts[0]}
     if len(parts) >= 2:
-        table["enabled"] = parts[1].strip().lower() in _ANIMATION_TRUE
+        table["enabled"] = parse_hyprlang_bool(parts[1]) is True
     if len(parts) >= 3:
         table["speed"] = coerce_value(parts[2])
     if len(parts) >= 4 and parts[3]:
@@ -135,10 +131,9 @@ def emit_permission(args: str) -> str:
 def emit_plugin_load(value: str) -> str | None:
     """``plugin = /path/to.so`` → ``hl.plugin.load("/path/to.so")``.
 
-    ``hl.plugin`` is a namespace table, not a function — the actual API
-    is ``hl.plugin.load(...)``. Calling ``hl.plugin(...)`` would raise
-    "attempt to call a table value" on the user's machine. Returns
-    ``None`` for empty paths so the caller drops the line.
+    ``hl.plugin`` is a namespace table, not a function; calling
+    ``hl.plugin(...)`` would raise "attempt to call a table value" at
+    runtime.
     """
     path = value.strip()
     if not path:
@@ -147,7 +142,6 @@ def emit_plugin_load(value: str) -> str | None:
 
 
 def format_exec_block(event: str, commands: list[str]) -> str:
-    """Render a batched ``hl.on(event, function() … end)`` block."""
     lines = [f"hl.on({quote_string(event)}, function()"]
     for cmd in commands:
         lines.append(f"{INDENT}{cmd}")

@@ -19,13 +19,15 @@ from hyprland_config import (
     load_lua,
     parse_string,
     serialize_lua,
-    serialize_lua_tree,
 )
+from hyprland_config._lua import serialize_lua_tree
 
 
 @functools.cache
 def _lua_available() -> bool:
-    return any(shutil.which(name) is not None for name in ("lua", "lua5.4", "lua5.3"))
+    return any(
+        shutil.which(name) is not None for name in ("lua", "lua5.5", "lua5.4", "lua5.3", "lua5.2")
+    )
 
 
 requires_lua = pytest.mark.skipif(not _lua_available(), reason="no lua interpreter on PATH")

@@ -1,4 +1,4 @@
-"""Single-line public emit APIs used by live-apply (``hyprctl eval``) callers.
+"""Single-line emit APIs used by live-apply (``hyprctl eval``) callers.
 
 The walker uses these one-liners too, via :data:`STATIC_KEYWORD_EMITTERS`,
 to translate keyword lines during document emit. Centralising the
@@ -10,6 +10,7 @@ from functools import partial
 from typing import Any
 
 from hyprland_config._hyprlang._bind import is_bind_keyword
+from hyprland_config._hyprlang._parser import is_keyword
 from hyprland_config._lua._emit._bind import emit_bind, emit_unbind
 from hyprland_config._lua._emit._dispatchers import (
     dispatcher_drops_address_selector,
@@ -105,6 +106,26 @@ def emit_option_assignment(full_key: str, value: str) -> str:
     tree: dict[str, Any] = {}
     set_nested(tree, split_key(full_key), coerce_value(value))
     return f"hl.config({format_table(tree, indent=0)})"
+
+
+def keyword_to_lua(key: str, value: Any) -> str:
+    """Translate a single ``key = value`` line to its Lua ``hl.*`` form.
+
+    Suitable as the body of a ``hyprctl eval``. Keywords (``bind``, ``env``,
+    ``monitor``, …) route to their dedicated emitter; option assignments
+    (``general:gaps_in``, …) emit a single ``hl.config({...})`` call with the
+    value nested at the right depth.
+
+    Raises ``ValueError`` when the keyword has no Lua equivalent the emitter
+    can produce (``submap``, an unmapped dispatcher, a malformed line).
+    """
+    value_str = str(value)
+    if is_keyword(key):
+        snippet = emit_keyword_line(key, value_str)
+        if snippet is None:
+            raise ValueError(f"No Lua mapping for keyword {key!r} = {value_str!r}")
+        return snippet
+    return emit_option_assignment(key, value_str)
 
 
 def define_submap_to_lua(name: str, binds: list[tuple[str, str]]) -> str:

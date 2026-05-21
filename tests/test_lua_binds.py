@@ -7,13 +7,8 @@ and the runtime APIs ``dispatch_to_lua`` and ``define_submap_to_lua``.
 
 import pytest
 
-from hyprland_config import (
-    define_submap_to_lua,
-    dispatch_to_lua,
-    emit_keyword_line,
-    parse_string,
-    serialize_lua,
-)
+from hyprland_config import parse_string, serialize_lua
+from hyprland_config._lua import define_submap_to_lua, dispatch_to_lua, emit_keyword_line
 from tests._lua_helpers import assert_lua_compiles, requires_lua
 
 
