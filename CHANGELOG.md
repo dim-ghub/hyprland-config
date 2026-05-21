@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `serialize_lua_tree` now resolves cross-file `$variable` references. A `$terminal` defined in `variables.conf` and used in `keybindings.conf` previously leaked through as the literal `"$terminal"` (which Hyprland's Lua parser rejects). Such variables now emit as a bare `var_X = …` global in their defining file and read as that global elsewhere; file-local variables still emit as `local`, and single-chunk `serialize_lua` is unchanged
 - `$var` references inside v3 `windowrule` / `layerrule` matchers and effects (e.g. `match:class $myclass`, `bordersize $mywidth`) now emit as the Lua `var_NAME` identifier instead of the literal `"$NAME"` string; the Rule emission path previously bypassed the variable-expansion step that the keyword path already used
-- `hl.monitor` now always emits an `output` field, so the catch-all rule `monitor = , preferred, auto, 1` (empty output name) becomes `output = ""` instead of dropping the key — Hyprland's Lua API requires `output` to be a string
+- `hl.monitor` now always emits an `output` field, so the catch-all rule `monitor = , preferred, auto, 1` (empty output name) becomes `output = ""` instead of dropping the key — Hyprland's Lua API requires `output` to be a string. https://github.com/BlueManCZ/hyprland-config/pull/1
 
 ## [0.9.1] - 2026-05-21
 
