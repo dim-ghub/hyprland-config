@@ -40,7 +40,8 @@ rule, a plugin we don't recognise) lands at the bottom in a trailing
 manual-conversion block so users can see exactly what wasn't migrated.
 """
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -144,11 +145,22 @@ class _CondScope:
 class _EmitState:
     """Accumulator for everything we've emitted while walking the document.
 
-    ``referenced_vars`` collects ``$VAR`` names that appear in conditional
-    expressions so :func:`_assemble_lua` can emit ``local NAME = "value"``
-    declarations at the top — the rest of the emitter inline-expands
-    ``$VAR`` at use sites, so this only surfaces variables the conditional
-    logic actually needs at Lua runtime.
+    ``variables`` is the scope ``$VAR`` references resolve against. Hyprland
+    variables are global across ``source``\\ d files, so this is the *merged*
+    scope of the whole config tree — not just the file currently emitting —
+    which lets a ``$terminal`` defined in ``variables.conf`` resolve in
+    ``keybindings.conf``.
+
+    ``referenced_vars`` collects every ``$VAR`` name a line in this file
+    actually uses, in dependency order. :func:`_assemble_lua` declares the
+    ones *not* in ``global_var_names`` as ``local`` at the top of the file;
+    the rest are read as cross-file globals.
+
+    ``global_var_names`` are variables referenced from a file other than the
+    one defining them (see :func:`_collect_cross_file_global_names`). The
+    defining file emits them as bare ``var_X = …`` globals (collected in
+    ``exported_globals``); every other file just reads the global. Empty for
+    single-chunk :func:`serialize_lua`, where a ``local`` is always in scope.
     """
 
     groups: list[_Group] = field(default_factory=lambda: [_Group()])
@@ -157,6 +169,9 @@ class _EmitState:
     cond_stack: list[_CondScope] = field(default_factory=list)
     submap: _SubmapScope | None = None
     referenced_vars: dict[str, str] = field(default_factory=dict)
+    variables: dict[str, str] = field(default_factory=dict)
+    global_var_names: frozenset[str] = frozenset()
+    exported_globals: dict[str, str] = field(default_factory=dict)
 
     @property
     def current(self) -> _Group:
@@ -197,9 +212,14 @@ def serialize_lua(doc: Document) -> str:
     bridged by ``require()`` calls (``dofile()`` only where ``require``
     can't name the file).
     """
-    state = _EmitState()
-    for owning_doc, line in doc.iter_lines(recursive=True):
-        _process_line(line, state, owning_doc)
+    # One Lua chunk: a ``local`` declared at the top is in scope for the whole
+    # file, so every variable resolves locally — no globals needed. Variables
+    # are global across ``source``\\ d files in Hyprland, so the resolution
+    # scope is the merged tree scope (``doc.variables``), letting a ``$var``
+    # defined in a sourced file resolve in sibling lines.
+    state = _EmitState(variables=doc.variables)
+    for _owning_doc, line in doc.iter_lines(recursive=True):
+        _process_line(line, state)
     return _assemble_lua(state)
 
 
@@ -229,21 +249,32 @@ def serialize_lua_tree(doc: Document) -> list[LuaFile]:
     # Hyprland resolves ``require`` against the main config file's directory
     # (see :func:`_lua_module_name`), so the whole tree shares one root.
     config_root = doc.path.parent if doc.path is not None else None
-    _emit_doc_tree(doc, output, config_root)
+    # Each file is its own Lua chunk, so a ``local`` can't cross a ``require``
+    # boundary. Variables used in a file other than the one defining them must
+    # therefore become globals (Hyprland's required files share ``_G``); the
+    # rest stay file-local. Classify once over the whole tree.
+    global_names = _collect_cross_file_global_names(doc)
+    _emit_doc_tree(doc, output, config_root, doc.variables, global_names)
     return output
 
 
-def _emit_doc_tree(doc: Document, output: list[LuaFile], config_root: Path | None) -> None:
-    state = _EmitState()
+def _emit_doc_tree(
+    doc: Document,
+    output: list[LuaFile],
+    config_root: Path | None,
+    root_variables: dict[str, str],
+    global_names: frozenset[str],
+) -> None:
+    state = _EmitState(variables=root_variables, global_var_names=global_names)
     for line in doc.lines:
         if isinstance(line, Source):
             for sub_doc in line.documents:
-                _emit_doc_tree(sub_doc, output, config_root)
+                _emit_doc_tree(sub_doc, output, config_root, root_variables, global_names)
                 sub_lua_path = _conf_path_to_lua(sub_doc.path)
                 if sub_lua_path is not None:
                     state.current.extras.append(_source_include(sub_lua_path, config_root))
             continue
-        _process_line(line, state, doc)
+        _process_line(line, state)
 
     out_path = _conf_path_to_lua(doc.path)
     if out_path is None or doc.path is None:
@@ -322,6 +353,86 @@ def _lua_module_name(out_path: Path, config_root: Path) -> str | None:
     return ".".join(segments)
 
 
+_VAR_REF_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_-]*)")
+
+
+def _direct_var_refs(text: str, known: frozenset[str]) -> set[str]:
+    """Return the ``$var`` names in *text* that name a known variable.
+
+    Maximal-munch tokenisation (``$mainMod`` yields ``mainMod``, never the
+    prefix ``main``) sidesteps the collisions a substring check would hit.
+    Only direct references count; value chains are handled by the caller's
+    transitive promotion.
+    """
+    return {m.group(1) for m in _VAR_REF_RE.finditer(text)} & known
+
+
+def _collect_cross_file_global_names(doc: Document) -> frozenset[str]:
+    """Variables that must be Lua globals because they cross a file boundary.
+
+    Each sourced file emits as its own Lua chunk, and a ``local`` can't be
+    seen across a ``require``. So a variable referenced in a file other than
+    the one defining it can't ride a ``local`` — it has to be a global on the
+    shared ``_G`` (Hyprland's required files share one Lua state). Walks the
+    whole tree recording where each variable is defined and which files
+    reference it (assignment / keyword values and conditional expressions),
+    then flags a name when it's referenced outside its defining file or
+    defined in more than one file. Finally promotes the value-dependencies of
+    every global — a global's emitted ``var_X = … var_dep …`` definition reads
+    ``var_dep`` by name, so the dependency must be a global too.
+    """
+    known = frozenset(doc.variables)
+    if not known:
+        return frozenset()
+
+    def_files: dict[str, set[Path | None]] = {}
+    ref_files: dict[str, set[Path | None]] = {}
+
+    def visit(d: Document) -> None:
+        for line in d.lines:
+            if isinstance(line, Source):
+                for sub in line.documents:
+                    visit(sub)
+            elif isinstance(line, Variable):
+                def_files.setdefault(line.name, set()).add(d.path)
+                for name in _direct_var_refs(line.value, known):
+                    ref_files.setdefault(name, set()).add(d.path)
+            elif isinstance(line, (Assignment, Keyword)):
+                for name in _direct_var_refs(line.value, known):
+                    ref_files.setdefault(name, set()).add(d.path)
+            elif isinstance(line, Rule):
+                for _, value in line.matchers:
+                    for name in _direct_var_refs(value, known):
+                        ref_files.setdefault(name, set()).add(d.path)
+                for _, value in line.effects:
+                    for name in _direct_var_refs(value, known):
+                        ref_files.setdefault(name, set()).add(d.path)
+            elif isinstance(line, Conditional):
+                for name in _direct_var_refs(line.expression, known):
+                    ref_files.setdefault(name, set()).add(d.path)
+
+    visit(doc)
+
+    cross_file: set[str] = set()
+    for name, defs in def_files.items():
+        refs = ref_files.get(name, set())
+        if len(defs) > 1 or (refs - defs):
+            cross_file.add(name)
+
+    # A global's definition references its dependencies by their ``var_X``
+    # name, so any variable a global's value reads has to be a global as well.
+    changed = True
+    while changed:
+        changed = False
+        for name in list(cross_file):
+            for dep in _direct_var_refs(doc.variables.get(name, ""), known):
+                if dep not in cross_file:
+                    cross_file.add(dep)
+                    changed = True
+
+    return frozenset(cross_file)
+
+
 def _assemble_lua(state: _EmitState) -> str:
     """Render an accumulated :class:`_EmitState` to a Lua source string.
 
@@ -329,17 +440,25 @@ def _assemble_lua(state: _EmitState) -> str:
     sections are joined with a blank line between them. The trailing
     manual-conversion block, when present, sits after every group.
 
-    Variables referenced by translated ``# hyprlang if`` expressions get
-    a leading ``local`` preamble so the conditional bodies can read them
-    at Lua load time — every other ``$VAR`` reference is inline-expanded
-    by the per-line emitters, so this preamble only ever lists variables
-    the conditional logic actually needs.
+    Variables get a leading preamble so later lines (including translated
+    ``# hyprlang if`` bodies) can read them: cross-file variables defined in
+    this file are exported as bare ``var_X = …`` globals, and the variables
+    this file references that *aren't* cross-file globals are declared
+    ``local``. A cross-file global the file only references is neither
+    exported nor re-declared here — it reads the global a sibling file set.
     """
     _drain_open_conditionals(state)
     _close_submap(state)
     sections: list[str] = []
-    if state.referenced_vars:
-        sections.append(_format_var_preamble(state.referenced_vars))
+    if state.exported_globals:
+        sections.append(_format_var_preamble(state.exported_globals, state.variables, local=False))
+    local_vars = {
+        name: value
+        for name, value in state.referenced_vars.items()
+        if name not in state.global_var_names
+    }
+    if local_vars:
+        sections.append(_format_var_preamble(local_vars, state.variables, local=True))
     for group in state.groups:
         rendered = _render_group(group)
         if rendered is not None:
@@ -370,22 +489,28 @@ def _drain_open_conditionals(state: _EmitState) -> None:
                 state.skipped.append(body_line.raw.rstrip("\n").strip())
 
 
-def _format_var_preamble(variables: dict[str, str]) -> str:
-    """Render ``local var_NAME = …`` lines for each referenced variable.
+def _format_var_preamble(
+    names_values: dict[str, str], scope: dict[str, str], *, local: bool
+) -> str:
+    """Render ``[local ]var_NAME = …`` declarations for *names_values*.
+
+    *names_values* is the name→value mapping to declare, iterated in order, so
+    dependencies must precede dependents (referenced-var insertion order and
+    source order both satisfy this). *scope* is the full variable scope a
+    value's own ``$ref`` chain resolves against — wider than *names_values* so
+    a ``local`` whose value reads a cross-file global still renders that
+    global's ``var_X``. ``local=False`` drops the keyword to export a global.
 
     Values flow through the same coercion as the inline assignment path —
     numbers emit as Lua numbers, bool words as booleans, gradients as
-    structured tables, everything else as quoted strings. Insertion order
-    is preserved; transitive deps surface after the variable that
-    referenced them. Lua tolerates this because locals are looked up at
-    call time, not at declaration time.
+    structured tables, everything else as quoted strings.
     """
+    prefix = "local " if local else ""
     lines: list[str] = []
-    for name, value in variables.items():
-        own_refs: dict[str, str] = {}
-        rendered_value = expand_value_lua(value, variables, own_refs)
+    for name, value in names_values.items():
+        rendered_value = expand_value_lua(value, scope, {})
         coerced = coerce_value(rendered_value)
-        lines.append(f"local {lua_var_name(name)} = {format_value(coerced, 0)}")
+        lines.append(f"{prefix}{lua_var_name(name)} = {format_value(coerced, 0)}")
     return "\n".join(lines) + "\n"
 
 
@@ -422,12 +547,12 @@ def _render_group(group: _Group) -> str | None:
 _BLOCK_RULE_SECTIONS = frozenset({"windowrule", "windowrulev2", "layerrule"})
 
 
-def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
+def _process_line(line: Line, state: _EmitState) -> None:
     """Route a single line to the right accumulator on *state*.
 
-    *owning_doc* is the Document that originally contained *line* (the parent
-    when sources are followed). We use its variable scope to expand
-    ``$var`` references in keyword arguments before emitting.
+    ``$var`` references in values resolve against ``state.variables`` — the
+    merged scope of the whole config tree, since Hyprland variables are global
+    across ``source``\\ d files.
     """
     # Inside a ``# hyprlang if … endif`` block, buffer lines into the active
     # branch until the closing directive fires. Nested ``if``/``endif`` pairs
@@ -458,13 +583,17 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
             return
 
     if isinstance(line, Conditional):
-        _handle_conditional(line, state, owning_doc)
+        _handle_conditional(line, state)
         return
 
     if isinstance(line, Variable):
-        # No standalone output — referenced variables surface in the local
-        # preamble (see `_assemble_lua`); unreferenced variables stay inline-
-        # expanded at their consumption sites.
+        # A variable referenced from another file becomes a global; emit its
+        # definition here (the defining file) as a bare ``var_X = …`` so the
+        # sibling files reading it find it on ``_G``. File-local variables
+        # produce no standalone output — they surface inline as a ``local``
+        # declaration in their consuming file's preamble (see `_assemble_lua`).
+        if line.name in state.global_var_names:
+            state.exported_globals[line.name] = line.value
         return
 
     if isinstance(line, Comment):
@@ -511,9 +640,9 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
         # Substitute ``$var`` references with marker tokens (and register
         # them in ``state.referenced_vars`` for the preamble) so each
         # reference survives downstream coercion as a ``LuaExpr`` pointing
-        # at a Lua local. Variables only resolve in their defining doc,
-        # so we use ``owning_doc.variables`` rather than the root's.
-        value = expand_value_lua(line.value, owning_doc.variables, state.referenced_vars)
+        # at the ``var_X`` declaration. Hyprland variables are global across
+        # ``source``\\ d files, so we resolve against the merged tree scope.
+        value = expand_value_lua(line.value, state.variables, state.referenced_vars)
         if state.section_stack:
             cur_name, cur_buf = state.section_stack[-1]
             if cur_name == "device" and cur_buf is not None:
@@ -538,7 +667,7 @@ def _process_line(line: Line, state: _EmitState, owning_doc: Document) -> None:
                 # to the standalone-keyword emitter.
                 add_block_rule_field(cur_buf, line.key, line.value)
                 return
-        _process_keyword(line, state, owning_doc)
+        _process_keyword(line, state)
         return
 
     if isinstance(line, Rule):
@@ -569,7 +698,22 @@ def render_rule_lua(rule: Rule) -> str:
 
 
 def _emit_rule(rule: Rule, state: _EmitState) -> None:
-    state.current.extras.append(render_rule_lua(rule))
+    # Marker-substitute ``$var`` refs in matcher/effect values so they survive
+    # as ``var_X`` Lua names rather than leaking as the literal string ``"$var"``
+    # (which Hyprland's Lua loader rejects). ``coerce_value`` recognises the
+    # marker bytes and emits the right ``LuaExpr`` downstream.
+    expanded = replace(
+        rule,
+        matchers=[
+            (k, expand_value_lua(v, state.variables, state.referenced_vars))
+            for k, v in rule.matchers
+        ],
+        effects=[
+            (k, expand_value_lua(v, state.variables, state.referenced_vars))
+            for k, v in rule.effects
+        ],
+    )
+    state.current.extras.append(render_rule_lua(expanded))
 
 
 def _effect_value_to_lua(name: str, args: str) -> Any:
@@ -605,13 +749,13 @@ def _try_translate_hyprctl_dispatch(cmd: str) -> str | None:
     return translate_dispatcher(parsed[0], parsed[1])
 
 
-def _process_keyword(line: Keyword, state: _EmitState, owning_doc: Document) -> None:
+def _process_keyword(line: Keyword, state: _EmitState) -> None:
     name = line.key
-    # Variables like ``$mainMod`` only resolve inside the document that
-    # defined them, so we use the owning doc's scope. Marker-substitute
-    # so ``$mainMod`` flows downstream as a token referencing the Lua
-    # local ``var_mainMod`` rather than the inlined value.
-    args = expand_value_lua(line.value, owning_doc.variables, state.referenced_vars)
+    # Marker-substitute ``$var`` references against the merged tree scope so
+    # ``$mainMod`` flows downstream as a token referencing the ``var_mainMod``
+    # declaration rather than the inlined value. Hyprland variables are global
+    # across ``source``\\ d files, so cross-file references resolve here too.
+    args = expand_value_lua(line.value, state.variables, state.referenced_vars)
     # Manual-conversion fallbacks below surface the user's original text, not
     # ``args``: ``expand_value_lua`` wraps every ``$var`` in \x01..\x02 sentinel
     # bytes, which would render as mojibake boxes in the "won't migrate" list.
@@ -717,7 +861,7 @@ def _close_submap(state: _EmitState) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Document) -> None:
+def _handle_conditional(line: Conditional, state: _EmitState) -> None:
     """Route a ``# hyprlang`` directive at the current scope's depth zero.
 
     ``if`` opens a new scope; ``elif`` / ``else`` start a fresh branch on
@@ -736,7 +880,7 @@ def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Docume
 
     if kind == "if":
         scope = _CondScope()
-        _open_branch(scope, line, owning_doc, state)
+        _open_branch(scope, line, state)
         state.cond_stack.append(scope)
         return
 
@@ -747,7 +891,7 @@ def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Docume
     scope = state.cond_stack[-1]
 
     if kind == "elif":
-        _open_branch(scope, line, owning_doc, state)
+        _open_branch(scope, line, state)
         return
 
     if kind == "else":
@@ -768,7 +912,7 @@ def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Docume
                     state.skipped.append(body_line.raw.rstrip("\n").strip())
             state.skipped.append(line.raw.rstrip("\n").strip())
             return
-        rendered = _emit_conditional_block(scope, state, owning_doc)
+        rendered = _emit_conditional_block(scope, state)
         if state.cond_stack:
             # Outer conditional is still collecting — the rendered block goes
             # into the outer branch's buffer as a pre-rendered Line; the
@@ -781,14 +925,13 @@ def _handle_conditional(line: Conditional, state: _EmitState, owning_doc: Docume
         return
 
 
-def _open_branch(
-    scope: _CondScope, directive: Conditional, owning_doc: Document, state: _EmitState
-) -> None:
+def _open_branch(scope: _CondScope, directive: Conditional, state: _EmitState) -> None:
     """Start a new ``if``/``elif`` branch with a translated expression.
 
     Pulls every ``$VAR`` named in the expression into ``state.referenced_vars``
-    so the preamble can declare them as Lua ``local``\\ s. An expression
-    we can't translate (compound boolean, unknown shape) flips the scope's
+    so the preamble declares it (as a ``local``, or — if it's a cross-file
+    global — reads the global a sibling file exported). An expression we can't
+    translate (compound boolean, unknown shape) flips the scope's
     ``untranslatable`` flag — the closing ``endif`` then dumps the whole
     block into the manual-conversion list.
     """
@@ -799,7 +942,7 @@ def _open_branch(
         return
     lua_expr, refs = translated
     for name in refs:
-        value = owning_doc.variables.get(name)
+        value = state.variables.get(name)
         if value is not None and name not in state.referenced_vars:
             state.referenced_vars[name] = value
     scope.branches.append(_CondBranch(lua_expr=lua_expr, boundary=directive))
@@ -810,30 +953,34 @@ class _RawLua(Line):
     """Pre-rendered Lua from a nested conditional, parked in the outer branch."""
 
 
-def _emit_conditional_block(
-    scope: _CondScope, outer_state: _EmitState, owning_doc: Document
-) -> str:
+def _emit_conditional_block(scope: _CondScope, outer_state: _EmitState) -> str:
     """Render a closed scope as a single ``if … elseif … else … end`` chunk.
 
-    Each branch's buffered lines run through a fresh sub-state, the resulting
-    flat Lua statements get indented and wrapped by the branch keyword
-    (``if EXPR then`` / ``elseif EXPR then`` / ``else``). Skipped entries
-    and referenced variables collected by the sub-state bubble up to
-    *outer_state* so the trailing manual-conversion block and the local
-    preamble see the full picture.
+    Each branch's buffered lines run through a fresh sub-state (sharing the
+    outer variable scope and cross-file-global set), the resulting flat Lua
+    statements get indented and wrapped by the branch keyword (``if EXPR
+    then`` / ``elseif EXPR then`` / ``else``). Skipped entries, referenced
+    variables, and exported globals collected by the sub-state bubble up to
+    *outer_state* so the trailing manual-conversion block and the preamble
+    see the full picture.
     """
     parts: list[str] = []
     for i, branch in enumerate(scope.branches):
-        sub_state = _EmitState()
+        sub_state = _EmitState(
+            variables=outer_state.variables, global_var_names=outer_state.global_var_names
+        )
         for ln in branch.lines:
             if isinstance(ln, _RawLua):
                 sub_state.current.extras.append(ln.raw)
             else:
-                _process_line(ln, sub_state, owning_doc)
+                _process_line(ln, sub_state)
         outer_state.skipped.extend(sub_state.skipped)
         for name, value in sub_state.referenced_vars.items():
             if name not in outer_state.referenced_vars:
                 outer_state.referenced_vars[name] = value
+        for name, value in sub_state.exported_globals.items():
+            if name not in outer_state.exported_globals:
+                outer_state.exported_globals[name] = value
         body = _render_state_flat(sub_state)
         if branch.lua_expr is None:
             parts.append("else\n")

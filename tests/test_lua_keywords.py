@@ -58,6 +58,23 @@ class TestMonitorKeyword:
         assert "position" not in out
         assert "scale" not in out
 
+    def test_monitor_empty_output_emits_empty_string(self) -> None:
+        # The catch-all rule ``monitor = , preferred, auto, 1`` carries no
+        # output name. Hyprland's Lua ``hl.monitor`` requires ``output`` as a
+        # string ("output field is required and should be a string"), so the
+        # empty name must surface as ``output = ""`` rather than be dropped.
+        out = serialize_lua(parse_string("monitor = , preferred, auto, 1\n"))
+        assert 'output = "",' in out
+        assert 'mode = "preferred",' in out
+        assert 'position = "auto",' in out
+        assert "scale = 1," in out
+
+    def test_monitor_empty_output_with_disable(self) -> None:
+        # Empty output plus the disable short-form still emits ``output = ""``.
+        out = serialize_lua(parse_string("monitor = , disable\n"))
+        assert 'output = "",' in out
+        assert "disabled = true," in out
+
 
 class TestBezierKeyword:
     def test_bezier_emits_hl_curve(self) -> None:
@@ -193,6 +210,28 @@ class TestNamedRuleLuaEmission:
         )
         assert "enabled = false" in out
         assert "enable =" not in out  # never the bare ``enable`` field
+
+    def test_rule_matcher_uses_var_reference(self) -> None:
+        # A ``$var`` inside a v3 rule's matcher value must emit as the bare
+        # ``var_NAME`` identifier, not the literal string ``"$NAME"`` (which
+        # Hyprland's Lua loader rejects). The Rule path bypasses the keyword
+        # emitter, so the rule walker has to expand ``$var`` itself.
+        out = serialize_lua(
+            parse_string("$myclass = kitty\nwindowrule = float, match:class $myclass\n")
+        )
+        assert 'local var_myclass = "kitty"' in out
+        assert "class = var_myclass" in out
+        assert "$myclass" not in out
+        assert '"$myclass"' not in out
+
+    def test_rule_effect_uses_var_reference(self) -> None:
+        # Same expansion applies to effect arg values.
+        out = serialize_lua(
+            parse_string("$mywidth = 5\nwindowrule = bordersize $mywidth, match:class kitty\n")
+        )
+        assert "local var_mywidth = 5" in out or 'local var_mywidth = "5"' in out
+        assert "bordersize = var_mywidth" in out
+        assert "$mywidth" not in out
 
 
 class TestWorkspaceRule:

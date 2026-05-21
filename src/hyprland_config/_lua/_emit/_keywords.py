@@ -41,7 +41,12 @@ def emit_monitor(args: str) -> str:
     """
     parts = split_csv(args)
     table: dict[str, Any] = {}
-    if parts and parts[0]:
+    # Always emit ``output``, even when the name field is empty. The catch-all
+    # rule ``monitor = , preferred, auto, 1`` (no output name) is common, and
+    # Hyprland's Lua ``hl.monitor`` rejects a table without ``output`` ("output
+    # field is required and should be a string"). An empty name becomes
+    # ``output = ""`` — the explicit form the compositor accepts.
+    if parts:
         table["output"] = parts[0]
     # Short-form: ``OUTPUT, disable`` (no positional args after).
     if len(parts) == 2 and parts[1].strip().lower() == "disable":

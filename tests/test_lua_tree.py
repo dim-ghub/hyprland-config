@@ -203,6 +203,87 @@ class TestSerializeLuaTree:
         assert any("plugin" in entry for entry in files[0].unmapped)
 
 
+class TestCrossFileVariables:
+    """A ``$var`` used in a file other than the one defining it can't ride a
+    file-local ``local`` — Lua chunks don't share locals across ``require`` —
+    so it becomes a global on the shared ``_G``. Variables used only within
+    their defining file stay ``local``. This is the multi-file counterpart to
+    the single-chunk ``local`` behaviour in ``test_lua_emit.py``; before it,
+    cross-file references leaked through as the literal string ``"$var"`` that
+    Hyprland rejected at reload.
+    """
+
+    def test_cross_file_var_exported_as_global(self, tmp_path) -> None:
+        (tmp_path / "vars.conf").write_text("$terminal = ghostty\n")
+        (tmp_path / "binds.conf").write_text("bind = SUPER, Return, exec, $terminal\n")
+        (tmp_path / "main.conf").write_text("source = ./vars.conf\nsource = ./binds.conf\n")
+        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
+        # Defining file exports a bare global (no `local`).
+        assert 'var_terminal = "ghostty"' in tree[tmp_path / "vars.lua"]
+        assert "local var_terminal" not in tree[tmp_path / "vars.lua"]
+        # Consumer reads the global, doesn't re-declare it, no literal "$terminal".
+        binds = tree[tmp_path / "binds.lua"]
+        assert "hl.dsp.exec_cmd(var_terminal)" in binds
+        assert "local var_terminal" not in binds
+        assert "$terminal" not in binds
+
+    def test_file_local_var_stays_local(self, tmp_path) -> None:
+        # $mainMod is defined and used only in binds.conf, so it needs no
+        # global; $terminal crosses from vars.conf and does.
+        (tmp_path / "vars.conf").write_text("$terminal = ghostty\n")
+        (tmp_path / "binds.conf").write_text(
+            "$mainMod = SUPER\nbind = $mainMod, Return, exec, $terminal\n"
+        )
+        (tmp_path / "main.conf").write_text("source = ./vars.conf\nsource = ./binds.conf\n")
+        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
+        binds = tree[tmp_path / "binds.lua"]
+        assert 'local var_mainMod = "SUPER"' in binds
+        assert "var_mainMod" not in tree[tmp_path / "vars.lua"]
+        assert 'var_terminal = "ghostty"' in tree[tmp_path / "vars.lua"]
+        assert "hl.dsp.exec_cmd(var_terminal)" in binds
+
+    def test_cross_file_chain_promotes_dependency_to_global(self, tmp_path) -> None:
+        # $accent = $primary (both in colors.conf); $accent is used in
+        # deco.conf, so it's a global — and its dependency $primary must be a
+        # global too, declared before it.
+        (tmp_path / "colors.conf").write_text("$primary = rgb(98a8b3)\n$accent = $primary\n")
+        (tmp_path / "deco.conf").write_text("general:col.active_border = $accent\n")
+        (tmp_path / "main.conf").write_text("source = ./colors.conf\nsource = ./deco.conf\n")
+        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
+        colors = tree[tmp_path / "colors.lua"]
+        assert 'var_primary = "rgb(98a8b3)"' in colors
+        assert "var_accent = var_primary" in colors
+        assert colors.index("var_primary") < colors.index("var_accent")
+        assert "local " not in colors  # both globals, neither a local
+        assert "active_border = var_accent," in tree[tmp_path / "deco.lua"]
+
+    def test_unused_var_not_emitted(self, tmp_path) -> None:
+        # A variable defined but never referenced stays out of the output,
+        # matching single-file behaviour and Hyprlang's silent-ignore.
+        (tmp_path / "vars.conf").write_text("$used = ghostty\n$unused = whatever\n")
+        (tmp_path / "binds.conf").write_text("bind = SUPER, Return, exec, $used\n")
+        (tmp_path / "main.conf").write_text("source = ./vars.conf\nsource = ./binds.conf\n")
+        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
+        joined = "\n".join(tree.values())
+        assert "var_unused" not in joined
+        assert "whatever" not in joined
+        assert 'var_used = "ghostty"' in tree[tmp_path / "vars.lua"]
+
+    def test_rule_matcher_var_promoted_across_files(self, tmp_path) -> None:
+        # A ``$var`` inside a Rule's matcher (defined in another file) has
+        # to be promoted to a global too — the Rule path bypasses the keyword
+        # emitter, so the classifier needs to walk matcher/effect values.
+        (tmp_path / "vars.conf").write_text("$myclass = kitty\n")
+        (tmp_path / "rules.conf").write_text("windowrule = float, match:class $myclass\n")
+        (tmp_path / "main.conf").write_text("source = ./vars.conf\nsource = ./rules.conf\n")
+        tree = _by_path(serialize_lua_tree(load(tmp_path / "main.conf")))
+        assert 'var_myclass = "kitty"' in tree[tmp_path / "vars.lua"]
+        assert "local var_myclass" not in tree[tmp_path / "vars.lua"]
+        rules = tree[tmp_path / "rules.lua"]
+        assert "class = var_myclass" in rules
+        assert "$myclass" not in rules
+
+
 class TestSerializeAny:
     """``serialize_any`` dispatches on the path suffix — the write-side
     counterpart to ``load_any``."""

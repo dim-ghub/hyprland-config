@@ -5,6 +5,14 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-05-21
+
+### Fixed
+
+- `serialize_lua_tree` now resolves cross-file `$variable` references. A `$terminal` defined in `variables.conf` and used in `keybindings.conf` previously leaked through as the literal `"$terminal"` (which Hyprland's Lua parser rejects). Such variables now emit as a bare `var_X = …` global in their defining file and read as that global elsewhere; file-local variables still emit as `local`, and single-chunk `serialize_lua` is unchanged
+- `$var` references inside v3 `windowrule` / `layerrule` matchers and effects (e.g. `match:class $myclass`, `bordersize $mywidth`) now emit as the Lua `var_NAME` identifier instead of the literal `"$NAME"` string; the Rule emission path previously bypassed the variable-expansion step that the keyword path already used
+- `hl.monitor` now always emits an `output` field, so the catch-all rule `monitor = , preferred, auto, 1` (empty output name) becomes `output = ""` instead of dropping the key — Hyprland's Lua API requires `output` to be a string
+
 ## [0.9.1] - 2026-05-21
 
 ### Changed
@@ -281,6 +289,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.2
 [0.9.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.1
 [0.9.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.0
 [0.8.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.8.0

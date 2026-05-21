@@ -6,7 +6,13 @@ Variable references ($var) should be expanded before evaluation.
 
 import ast
 import operator
+import re
 from collections.abc import Callable
+
+# Hyprlang ``$var`` token. Maximal-munch tokenisation (``$mainMod`` is one
+# token, not ``$main`` plus literal ``Mod``) matches Hyprland's own parser and
+# avoids the prefix-collision class of bugs a substring-replace approach has.
+_VAR_REF_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_-]*)")
 
 _BIN_OPS: dict[type[ast.operator], Callable[[float, float], float]] = {
     ast.Add: operator.add,
@@ -111,13 +117,17 @@ def substitute_variables_with_markers(
     behaviour as :func:`expand_value` so unknown references don't
     disappear silently.
 
+    Tokenisation is maximal-munch via :data:`_VAR_REF_RE`: ``$mainMod`` is
+    one reference even when both ``$mainMod`` and ``$main`` exist, and
+    ``$foo123`` doesn't accidentally consume ``$foo`` if only ``$foo`` is
+    defined. Matches Hyprland's own parser.
+
     Used by the Lua emitter to keep variable references symbolic across
     the assignment / bind / keyword pipelines (see
     :func:`hyprland_config._lua._emit._format.to_lua_expr`).
     """
     if "$" not in text:
         return text
-    sorted_names = sorted(variables, key=len, reverse=True)
     in_progress: set[str] = set()
 
     def register(name: str) -> None:
@@ -128,23 +138,20 @@ def substitute_variables_with_markers(
             return
         in_progress.add(name)
         value = variables[name]
-        if "$" in value:
-            for ref_name in sorted_names:
-                if f"${ref_name}" in value:
-                    register(ref_name)
+        for m in _VAR_REF_RE.finditer(value):
+            if m.group(1) in variables:
+                register(m.group(1))
         referenced[name] = value
         in_progress.discard(name)
 
-    def substitute(s: str) -> str:
-        out = s
-        for name in sorted_names:
-            token = f"${name}"
-            if token in out:
-                register(name)
-                out = out.replace(token, f"{open_marker}{name}{close_marker}")
-        return out
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in variables:
+            return match.group(0)
+        register(name)
+        return f"{open_marker}{name}{close_marker}"
 
-    result = substitute(text)
+    result = _VAR_REF_RE.sub(_replace, text)
     if "{{" in result or "\\" in result:
         result = expand_expressions(result)
     return result
