@@ -340,6 +340,15 @@ class TestValueCoercion:
         out = serialize_lua(parse_string("decoration:shadow:color = rgba(1a1a1aee)\n"))
         assert 'color = "rgba(1a1a1aee)",' in out
 
+    def test_single_color_with_zero_angle_drops_angle(self) -> None:
+        # A single-color border with an explicit ``0deg`` isn't a gradient.
+        # Hyprland's Lua color parser rejects the ``"<color> 0deg"`` string
+        # (issue #43), so the no-op angle is dropped to a bare color, in the
+        # original notation.
+        out = serialize_lua(parse_string("general:col.active_border = 0xffed333b 0deg\n"))
+        assert 'active_border = "0xffed333b",' in out
+        assert "0deg" not in out
+
 
 class TestKeyFormatting:
     def test_lua_reserved_word_as_key_gets_bracketed(self) -> None:

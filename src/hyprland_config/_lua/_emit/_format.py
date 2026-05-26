@@ -218,6 +218,9 @@ def coerce_value(s: str) -> Any:
     - multi-colour gradients (``rgba(…) rgba(…) 45deg``) become a structured
       ``{colors = {…}, angle = N}`` dict, matching the form Hyprland's Lua API
       uses in the official example,
+    - a single colour with a redundant ``0deg`` (``0xffed333b 0deg``) sheds the
+      no-op angle and stays a bare-colour string, since Hyprland's Lua parser
+      rejects the ``"<colour> 0deg"`` form (see :func:`_drop_zero_angle`),
     - everything else (single colours, paths, vec2, free text) stays a string.
     """
     stripped = s.strip()
@@ -240,6 +243,9 @@ def coerce_value(s: str) -> Any:
     gradient = _try_gradient(stripped)
     if gradient is not None:
         return gradient
+    bare_color = _drop_zero_angle(stripped)
+    if bare_color is not None:
+        return bare_color
     return s
 
 
@@ -264,6 +270,31 @@ def _try_gradient(value: str) -> dict[str, Any] | None:
 
 
 _GRADIENT_ANGLE_RE = re.compile(r"(-?\d+)\s*deg\s*$")
+
+
+def _drop_zero_angle(value: str) -> str | None:
+    """Reduce a single solid colour carrying a redundant ``0deg`` to a bare colour.
+
+    Hyprland's Lua colour parser accepts a bare colour (``"0xRRGGBB"``) or a
+    structured gradient table. It rejects the ``"<colour> 0deg"`` string a
+    single-colour border produces (see issue #43). A real gradient needs at
+    least two stops or a non-zero angle, and those already route through
+    :func:`_try_gradient`, so a zero angle reaching here belongs to a plain
+    solid colour. Dropping the no-op angle leaves a colour string Hyprland
+    accepts, in the user's original notation.
+
+    Returns ``None`` when *value* isn't that shape, so the caller leaves bare
+    colours, paths and free text untouched.
+    """
+    m = _GRADIENT_ANGLE_RE.search(value)
+    if m is None or int(m.group(1)) != 0:
+        return None
+    head = value[: m.start()].strip()
+    try:
+        Color.parse(head)
+    except ValueError:
+        return None
+    return head
 
 
 def _try_gradient_with_markers(s: str) -> dict[str, Any] | None:

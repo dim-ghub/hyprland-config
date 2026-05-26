@@ -5,6 +5,12 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-05-26
+
+### Fixed
+
+- A single-color border with a redundant `0deg` (e.g. `general:col.active_border = 0xffed333b 0deg`) now emits the bare color `"0xffed333b"` rather than the `"<color> 0deg"` string, which Hyprland's Lua config manager rejects with `invalid color`. Multi-stop gradients and non-zero angles still emit the structured `{colors=…, angle=…}` table. https://github.com/BlueManCZ/hyprmod/issues/43
+
 ## [0.9.2] - 2026-05-21
 
 ### Fixed
@@ -289,6 +295,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.3
 [0.9.2]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.2
 [0.9.1]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.1
 [0.9.0]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.0
