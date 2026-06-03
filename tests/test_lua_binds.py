@@ -34,6 +34,48 @@ class TestBindBasic:
         assert "hl.dsp.exit()" in out
 
 
+class TestModifierNormalization:
+    """Hyprlang accepted concatenated / mixed-case modifiers; Lua needs exact
+    uppercase tokens. Legacy ``stringToModMask`` uppercased the whole mods
+    field and substring-matched each name, so ``SUPERSHIFT`` and ``Alt`` both
+    worked. ``hl.bind`` reads anything that isn't an exact mod token as a
+    keysym (``Unknown keysym: "SUPERSHIFT"``), so we decompose on the way out.
+    """
+
+    def test_concatenated_mods_split(self) -> None:
+        out = serialize_lua(parse_string("bind = SUPERSHIFT, F, fullscreen\n"))
+        assert 'hl.bind("SUPER + SHIFT + F"' in out
+        assert "SUPERSHIFT" not in out
+
+    def test_lowercase_mods_uppercased(self) -> None:
+        out = serialize_lua(parse_string("bind = Alt, F4, killactive,\n"))
+        assert 'hl.bind("ALT + F4"' in out
+
+    def test_mixed_case_concatenated(self) -> None:
+        out = serialize_lua(parse_string("bind = SuperShift, Q, killactive,\n"))
+        assert 'hl.bind("SUPER + SHIFT + Q"' in out
+
+    def test_underscore_separated_mods_split(self) -> None:
+        out = serialize_lua(parse_string("bind = SUPER_SHIFT, Q, killactive,\n"))
+        assert 'hl.bind("SUPER + SHIFT + Q"' in out
+
+    def test_control_alias_canonicalized(self) -> None:
+        out = serialize_lua(parse_string("bind = CONTROLALT, Delete, exec, logout\n"))
+        assert 'hl.bind("CTRL + ALT + Delete"' in out
+
+    def test_already_canonical_unchanged(self) -> None:
+        out = serialize_lua(parse_string("bind = SUPER SHIFT, Q, killactive,\n"))
+        assert 'hl.bind("SUPER + SHIFT + Q"' in out
+
+    def test_var_mod_preserved_alongside_literal(self) -> None:
+        # ``$mainMod`` must survive as the ``var_mainMod`` reference, not get
+        # mistaken for a modifier blob and torn apart.
+        out = serialize_lua(
+            parse_string("$mainMod = SUPER\nbind = $mainMod SHIFT, Q, killactive,\n")
+        )
+        assert 'var_mainMod .. " + SHIFT + Q"' in out
+
+
 class TestBindFlags:
     def test_binde_repeating(self) -> None:
         out = serialize_lua(parse_string("binde = , XF86AudioRaiseVolume, exec, up\n"))
@@ -308,18 +350,34 @@ class TestHyprctlKeywordTranslation:
         )
         assert 'hl.bind("SUPER + L", hl.dsp.dpms("off"))' in out
 
-    def test_hyprctl_dispatch_embedded_in_shell_rewritten(self) -> None:
-        # The shell wrapper (``sleep 1 && …``) carries timing semantics that
-        # have to survive the migration, so the inner ``dispatch`` is
-        # rewritten in place rather than collapsed to a native dispatcher.
+    def test_hyprctl_dispatch_embedded_in_shell_left_verbatim(self) -> None:
+        # ``hyprctl dispatch`` embedded in a larger shell command is a runtime
+        # IPC call to the ``hyprctl`` binary — it behaves identically whether
+        # the config is Hyprlang or Lua. Rewriting it to Lua dispatch syntax
+        # would break it, so the whole shell string (timing wrapper and all)
+        # passes through verbatim.
         out = serialize_lua(
             parse_string(
                 "bind = SUPER, L, exec, sleep 1 && hyprctl --instance 0 dispatch dpms off\n"
             )
         )
-        assert (
-            'hl.dsp.exec_cmd("sleep 1 && hyprctl --instance 0 dispatch \'hl.dsp.dpms(\\"off\\")\'")'
-        ) in out
+        assert 'hl.dsp.exec_cmd("sleep 1 && hyprctl --instance 0 dispatch dpms off")' in out
+        assert "hl.dsp.dpms" not in out
+
+    def test_bind_exec_embedded_dispatch_not_mangled(self) -> None:
+        # hyprmod issue #45: an embedded ``hyprctl dispatch exit`` inside a
+        # larger shell command must stay a literal runtime shell-out. The old
+        # rewrite turned it into ``hyprctl dispatch 'hl.dsp.exit()'`` — which
+        # hyprctl can't parse — silently breaking the keybind.
+        out = serialize_lua(
+            parse_string(
+                "$mainMod = SUPER\n"
+                "bind = $mainMod, M, exec, command -v hyprshutdown >/dev/null 2>&1 "
+                "&& hyprshutdown || hyprctl dispatch exit\n"
+            )
+        )
+        assert "hyprctl dispatch exit" in out
+        assert "hl.dsp.exit()" not in out
 
     def test_hyprctl_dispatch_unknown_verb_left_alone(self) -> None:
         # A verb that has no native translation isn't second-guessed; the
@@ -410,9 +468,12 @@ class TestHyprctlKeywordTranslation:
         assert 'hl.dispatch(hl.dsp.dpms("on"))' in out
         assert "hyprctl dispatch" not in out
 
-    def test_top_level_exec_hyprctl_dispatch_embedded_rewritten(self) -> None:
+    def test_top_level_exec_hyprctl_dispatch_embedded_left_verbatim(self) -> None:
+        # Embedded ``hyprctl dispatch`` is a runtime shell-out; it stays
+        # verbatim rather than being mangled into Lua dispatch syntax.
         out = serialize_lua(parse_string("exec = sleep 1 && hyprctl dispatch dpms on\n"))
-        assert ('hl.exec_cmd("sleep 1 && hyprctl dispatch \'hl.dsp.dpms(\\"on\\")\'")') in out
+        assert 'hl.exec_cmd("sleep 1 && hyprctl dispatch dpms on")' in out
+        assert "hl.dsp.dpms" not in out
 
     def test_mixed_exec_lines_emit_in_source_order(self) -> None:
         # ``exec`` emits at top level — when multiple ``exec`` entries

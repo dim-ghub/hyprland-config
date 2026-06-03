@@ -470,7 +470,8 @@ def parse_hyprctl_dispatch(cmd: str) -> tuple[str, str] | None:
     Returns ``None`` unless *cmd* is a single ``hyprctl ... dispatch``
     invocation that runs as one shell command (no ``&&`` / ``||`` / ``;`` /
     ``|`` / ``$(`` / backtick). Embedded use inside a larger shell command
-    is handled by :func:`rewrite_hyprctl_dispatch_in_shell` instead.
+    returns ``None`` too: there the call stays a verbatim runtime shell-out,
+    since ``hyprctl dispatch`` works the same regardless of config language.
 
     Lua-mode Hyprland (0.55+) reparses ``hyprctl dispatch <ARG>`` as
     ``hl.dispatch(<ARG>)``, so the legacy space-separated ``dispatch VERB ARGS``

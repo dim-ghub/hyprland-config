@@ -417,6 +417,87 @@ class TestBlockRuleSyntax:
         out = serialize_lua(parse_string(config))
         assert out.count("hl.window_rule({") == 2
 
+    def test_windowrule_nested_match_block(self) -> None:
+        # Hyprland 0.53+ also allows the matchers to live in a nested
+        # ``match { … }`` sub-block rather than flat ``match:KEY`` lines.
+        # The sub-block fields must nest under the rule's ``match`` table,
+        # not leak into ``hl.config({ windowrule = { match = … } })`` (which
+        # Hyprland rejects with "unknown config key windowrule.match.*").
+        config = (
+            "windowrule {\n"
+            "    name = fix-xwayland-drags\n"
+            "    no_focus = true\n"
+            "    match {\n"
+            "        class = ^$\n"
+            "        xwayland = true\n"
+            "        float = true\n"
+            "    }\n"
+            "}\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert out.count("hl.window_rule({") == 1
+        assert "windowrule = {" not in out  # never leaks into hl.config
+        assert "match = {" in out
+        assert 'name = "fix-xwayland-drags"' in out
+        assert "no_focus = true" in out
+        assert 'class = "^$"' in out
+        assert "xwayland = true" in out
+        assert "float = true" in out
+
+    def test_layerrule_nested_match_block(self) -> None:
+        config = (
+            "layerrule {\n"
+            "    name = noctalia\n"
+            "    blur = true\n"
+            "    match {\n"
+            "        namespace = noctalia-background-.*$\n"
+            "    }\n"
+            "}\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert out.count("hl.layer_rule({") == 1
+        assert "layerrule = {" not in out
+        assert 'namespace = "noctalia-background-.*$"' in out
+        assert "blur = true" in out
+
+    def test_nested_match_effect_and_matcher_dont_collide(self) -> None:
+        # ``float`` is both an effect (make matched window float) and a
+        # matcher (match floating windows). The effect stays top-level while
+        # the matcher nests under ``match`` — they must not overwrite.
+        config = (
+            "windowrule {\n"
+            "    float = yes\n"
+            "    match {\n"
+            "        float = false\n"
+            "        class = hyprland-run\n"
+            "    }\n"
+            "}\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert "float = true" in out  # the effect
+        assert "float = false" in out  # the matcher, nested under match
+        assert 'class = "hyprland-run"' in out
+
+    def test_multiple_nested_match_blocks_keep_own_matchers(self) -> None:
+        # Regression: every windowrule block writes the same
+        # ``windowrule:match:*`` path, so the buggy walker collapsed all of
+        # their matchers into one shared (and invalid) hl.config entry.
+        config = (
+            "windowrule {\n"
+            "    suppress_event = maximize\n"
+            "    match { class = .* }\n"
+            "}\n"
+            "windowrule {\n"
+            "    no_focus = true\n"
+            "    match { class = ^$ }\n"
+            "}\n"
+        )
+        out = serialize_lua(parse_string(config))
+        assert out.count("hl.window_rule({") == 2
+        assert "windowrule = {" not in out
+        assert 'class = ".*"' in out
+        assert 'class = "^$"' in out
+
     def test_submap_block_wraps_binds_in_define_submap(self) -> None:
         # Hyprlang's submap declaration is a directive — the binds between
         # ``submap = NAME`` and ``submap = reset`` belong to that named map.

@@ -5,6 +5,17 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2026-06-03
+
+### Added
+
+- Nested `match { … }` sub-blocks in block-form `windowrule` / `layerrule` now nest their matchers under the rule's `match` table instead of leaking into `hl.config` (which Hyprland rejected)
+
+### Fixed
+
+- Concatenated and mixed-case bind modifiers (`SUPERSHIFT`, `Alt`, `SUPER_SHIFT`) now decompose into canonical Lua tokens (`SUPER + SHIFT`); `hl.bind` read the verbatim form as an unknown keysym
+- `hyprctl dispatch` embedded in a larger shell command (e.g. `… || hyprctl dispatch exit`) is now left verbatim instead of rewritten to Lua syntax `hyprctl` can't parse, which silently broke the keybind. https://github.com/BlueManCZ/hyprmod/issues/45
+
 ## [0.9.5] - 2026-05-27
 
 ### Added
@@ -308,6 +319,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.6]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.6
 [0.9.5]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.5
 [0.9.4]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.4
 [0.9.3]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.3

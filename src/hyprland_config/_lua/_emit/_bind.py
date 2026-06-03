@@ -16,7 +16,56 @@ from typing import Any
 from hyprland_config._core._bind import BIND_FLAG_MAP, BindData
 from hyprland_config._hyprlang._bind import parse_bind_line
 from hyprland_config._lua._emit._dispatchers import translate_dispatcher
-from hyprland_config._lua._emit._format import format_table, quote_string
+from hyprland_config._lua._emit._format import VAR_MARKER_OPEN, format_table, quote_string
+
+# Modifier substrings → canonical Lua token. Hyprland's legacy Hyprlang parser
+# (``stringToModMask``) uppercased the whole mods field and matched each name
+# as a *substring*, so concatenated (``SUPERSHIFT``) and mixed-case (``Alt``)
+# forms all resolved to the same modmask. Hyprland's Lua ``hl.bind`` instead
+# requires exact uppercase tokens (``modFromSv``) and reads anything else as a
+# keysym, so migration has to decompose the legacy forms into canonical tokens.
+_MOD_ALIASES: tuple[tuple[str, str], ...] = (
+    ("SUPER", "SUPER"),
+    ("WIN", "SUPER"),
+    ("LOGO", "SUPER"),
+    ("MOD4", "SUPER"),
+    ("META", "SUPER"),
+    ("CONTROL", "CTRL"),
+    ("CTRL", "CTRL"),
+    ("ALT", "ALT"),
+    ("MOD1", "ALT"),
+    ("SHIFT", "SHIFT"),
+    ("CAPS", "CAPS"),
+    ("MOD2", "MOD2"),
+    ("MOD3", "MOD3"),
+    ("MOD5", "MOD5"),
+)
+# Conventional emit order — purely cosmetic, the modmask is order-independent.
+_MOD_ORDER: tuple[str, ...] = ("SUPER", "CTRL", "ALT", "SHIFT", "CAPS", "MOD2", "MOD3", "MOD5")
+
+
+def _normalize_mods(mods: list[str]) -> list[str]:
+    """Decompose Hyprlang modifier tokens into canonical Lua mod tokens.
+
+    Each whitespace-split token is matched against :data:`_MOD_ALIASES` by
+    substring (mirroring legacy ``stringToModMask``), so ``SUPERSHIFT`` →
+    ``["SUPER", "SHIFT"]`` and ``Alt`` → ``["ALT"]``. Tokens carrying a ``$var``
+    reference (already wrapped in :data:`VAR_MARKER_OPEN` sentinels by
+    ``expand_value_lua``) are passed through untouched, as are tokens that match
+    no known modifier — preserving the user's intent rather than dropping them.
+    """
+    result: list[str] = []
+    for token in mods:
+        if not token or VAR_MARKER_OPEN in token or "$" in token:
+            result.append(token)
+            continue
+        upper = token.upper()
+        found = {canonical for name, canonical in _MOD_ALIASES if name in upper}
+        decomposed = [m for m in _MOD_ORDER if m in found] if found else [token]
+        for mod in decomposed:
+            if mod not in result:
+                result.append(mod)
+    return result
 
 
 def _bind_flags_from_suffix(suffix: str) -> dict[str, bool] | None:
@@ -39,7 +88,7 @@ def _bind_flags_from_suffix(suffix: str) -> dict[str, bool] | None:
 
 def _format_key_combo(mods: list[str], key: str) -> str:
     """Format a Hyprlang ``MODS, KEY`` pair as a Lua ``"SUPER + Q"`` string."""
-    parts = [m for m in mods if m]
+    parts = [m for m in _normalize_mods(mods) if m]
     if key:
         parts.append(key)
     return " + ".join(parts)

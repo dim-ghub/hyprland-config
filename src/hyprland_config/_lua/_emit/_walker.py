@@ -63,10 +63,7 @@ from hyprland_config._core._values import parse_hyprlang_bool
 from hyprland_config._hyprlang._bind import is_bind_keyword
 from hyprland_config._lua._emit._bind import emit_bind
 from hyprland_config._lua._emit._conditional import translate_expression
-from hyprland_config._lua._emit._dispatchers import (
-    rewrite_hyprctl_dispatch_in_shell,
-    translate_dispatcher,
-)
+from hyprland_config._lua._emit._dispatchers import translate_dispatcher
 from hyprland_config._lua._emit._format import (
     INDENT,
     coerce_value,
@@ -547,6 +544,22 @@ def _render_group(group: _Group) -> str | None:
 _BLOCK_RULE_SECTIONS = frozenset({"windowrule", "windowrulev2", "layerrule"})
 
 
+def _parent_rule_buffer(state: _EmitState) -> dict[str, Any] | None:
+    """Return the enclosing windowrule/layerrule block's buffer, if any.
+
+    Used to recognise a nested ``match { … }`` sub-block: when the section
+    stack's top frame is a rule block with a live buffer, the ``match`` fields
+    describe that rule's matchers and must be routed into its buffer rather
+    than leaking into the global ``hl.config`` tree.
+    """
+    if not state.section_stack:
+        return None
+    name, buffer = state.section_stack[-1]
+    if name in _BLOCK_RULE_SECTIONS and buffer is not None:
+        return buffer
+    return None
+
+
 def _process_line(line: Line, state: _EmitState) -> None:
     """Route a single line to the right accumulator on *state*.
 
@@ -621,6 +634,13 @@ def _process_line(line: Line, state: _EmitState) -> None:
             # :func:`add_block_rule_field`'s plain-write semantics.
             buffer = {"name": line.section_key} if line.section_key else {}
             state.section_stack.append((line.name, buffer))
+        elif line.name == "match" and (parent := _parent_rule_buffer(state)) is not None:
+            # A nested ``match { … }`` inside a windowrule / layerrule block
+            # describes the parent rule's matchers, not a standalone section.
+            # Reuse the parent buffer reference so its fields (routed via the
+            # ``match:`` prefix in the Assignment handler) nest under the rule's
+            # ``match`` table instead of leaking into the global config tree.
+            state.section_stack.append(("match", parent))
         else:
             state.section_stack.append((line.name, None))
         return
@@ -647,6 +667,11 @@ def _process_line(line: Line, state: _EmitState) -> None:
             cur_name, cur_buf = state.section_stack[-1]
             if cur_name == "device" and cur_buf is not None:
                 cur_buf[line.key] = coerce_value(value)
+                return
+            if cur_name == "match" and cur_buf is not None:
+                # Field of a nested ``match { … }`` block — the ``match:``
+                # prefix nests it under the parent rule's ``match`` table.
+                add_block_rule_field(cur_buf, f"match:{line.key}", value)
                 return
             if cur_name in _BLOCK_RULE_SECTIONS and cur_buf is not None:
                 add_block_rule_field(cur_buf, line.key, value)
@@ -788,7 +813,7 @@ def _process_keyword(line: Keyword, state: _EmitState) -> None:
         elif dispatch_translation is not None:
             translated = f"hl.dispatch({dispatch_translation})"
         else:
-            translated = emit_exec_cmd_call(rewrite_hyprctl_dispatch_in_shell(args))
+            translated = emit_exec_cmd_call(args)
         if name == "exec":
             state.current.extras.append(translated)
         elif name == "exec-shutdown":
