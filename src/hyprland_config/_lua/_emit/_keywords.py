@@ -37,7 +37,8 @@ def emit_monitor(args: str) -> str:
 
     Hyprlang's ``monitor = OUTPUT, disable`` short-form maps to the
     Lua API's ``disabled = true`` boolean field (the Lua side rejects
-    ``mode = "disable"`` — confirmed against Hyprland 0.55+).
+    ``mode = "disable"`` — confirmed against Hyprland 0.55+). A full line
+    conversely emits an explicit ``disabled = false`` — see below.
     """
     parts = split_csv(args)
     table: dict[str, Any] = {}
@@ -52,6 +53,14 @@ def emit_monitor(args: str) -> str:
     if len(parts) == 2 and parts[1].strip().lower() == "disable":
         table["disabled"] = True
         return f"hl.monitor({format_table(table, indent=0)})"
+    # A full line means "this output, configured and on". Legacy Hyprlang
+    # re-enables a previously-disabled output implicitly whenever it sees a full
+    # line, but the Lua ``hl.monitor`` API is additive — a ``disabled = true``
+    # from an earlier call sticks until explicitly cleared. A live re-enable that
+    # omits the field therefore leaves the output dark (it only comes back on a
+    # full config reload). Emit ``disabled = false`` to reproduce the legacy
+    # implicit-enable semantics on live apply.
+    table["disabled"] = False
     if len(parts) >= 2:
         table["mode"] = parts[1]
     if len(parts) >= 3:

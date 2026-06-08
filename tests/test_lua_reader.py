@@ -149,6 +149,17 @@ class TestKeywordCalls:
         path = _write_lua(tmp_path, "hl.monitor({ output = 'DP-1', disabled = true })")
         assert _keywords(load_lua(path), "monitor") == ["DP-1, disable"]
 
+    def test_monitor_explicit_enable_reads_as_full_line(self, tmp_path: Path) -> None:
+        # ``disabled = false`` is the emitter's explicit re-enable marker; the
+        # reader must drop it rather than leak a spurious ``disabled, false``
+        # extra into the Hyprlang line.
+        path = _write_lua(
+            tmp_path,
+            "hl.monitor({ output = 'DP-1', mode = '2560x1440@144', "
+            "position = '0x0', scale = 1, disabled = false })",
+        )
+        assert _keywords(load_lua(path), "monitor") == ["DP-1, 2560x1440@144, 0x0, 1"]
+
     def test_bezier(self, tmp_path: Path) -> None:
         path = _write_lua(
             tmp_path,

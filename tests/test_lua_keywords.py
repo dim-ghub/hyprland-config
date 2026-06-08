@@ -48,6 +48,14 @@ class TestMonitorKeyword:
         out = serialize_lua(parse_string("monitor = DP-1, preferred, auto, 1, weird\n"))
         assert "__unparsed_extra" in out
 
+    def test_monitor_full_form_emits_explicit_enable(self) -> None:
+        # ``hl.monitor`` is additive: a sticky ``disabled = true`` from an
+        # earlier call survives unless cleared, so a full line must emit
+        # ``disabled = false`` to re-enable an output live (legacy Hyprlang
+        # re-enables implicitly on a full line).
+        out = serialize_lua(parse_string("monitor = DP-1, 2560x1440@144, 0x0, 1\n"))
+        assert "disabled = false," in out
+
     def test_monitor_disable_short_form(self) -> None:
         # ``monitor = OUTPUT, disable`` is Hyprlang's short-form; the Lua API
         # expects ``disabled = true`` and rejects ``mode = "disable"``.
