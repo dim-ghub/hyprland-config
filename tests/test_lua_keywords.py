@@ -246,7 +246,7 @@ class TestWorkspaceRule:
     def test_basic(self) -> None:
         out = serialize_lua(parse_string("workspace = 1, monitor:DP-1, default:true\n"))
         assert "hl.workspace_rule({" in out
-        assert "workspace = 1" in out
+        assert 'workspace = "1"' in out
         assert 'monitor = "DP-1"' in out
         assert "default = true" in out
 

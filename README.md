@@ -26,7 +26,7 @@ Requires Python 3.12+. Zero Python runtime dependencies. Reading Lua-format conf
 
 This is a round-trip parser. It keeps comments, blank lines, variable definitions, and formatting intact — editing one option doesn't rewrite the rest of the file.
 
-It follows `source` directives across multiple files, resolves globs (including absolute paths for NixOS/home-manager setups), detects cycles, and only writes back files that actually changed. Writes are atomic (temp file + fsync + rename) so a crash mid-save won't corrupt your config.
+It follows `source` directives (Hyprland's include/import mechanism) across multiple files, resolves globs (including absolute paths for NixOS/home-manager setups), detects cycles, and only writes back files that actually changed. Writes are atomic (temp file + fsync + rename) so a crash mid-save won't corrupt your config.
 
 600+ tests, including property-based and fuzz testing with Hypothesis.
 

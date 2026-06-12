@@ -5,6 +5,12 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-06-12
+
+### Fixed
+
+- Workspace rule selectors now always emit as Lua strings (`workspace = "1"` instead of `workspace = 1`). `hl.workspace_rule` declares the `workspace` field as a string; the integer form only worked through Lua's implicit number-to-string coercion and was flagged by lua-language-server. https://github.com/BlueManCZ/hyprmod/issues/48
+
 ## [0.9.7] - 2026-06-08
 
 ### Fixed

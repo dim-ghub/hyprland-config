@@ -10,7 +10,13 @@ from typing import Any
 
 from hyprland_config._core._rule_split import split_top_level
 from hyprland_config._core._values import parse_hyprlang_bool
-from hyprland_config._lua._emit._format import coerce_value, format_table, split_csv
+from hyprland_config._lua._emit._format import (
+    coerce_value,
+    format_table,
+    has_var_marker,
+    split_csv,
+    to_lua_expr,
+)
 from hyprland_config._lua._workspace_rules import hyprlang_field_to_lua
 
 
@@ -204,7 +210,13 @@ def emit_workspace_rule(args: str) -> str:
     parts = split_csv(args)
     if not parts:
         return f"-- malformed workspace: {args}"
-    table: dict[str, Any] = {"workspace": coerce_value(parts[0])}
+    # The selector stays a string even when numeric: ``hl.workspace_rule``
+    # declares ``workspace`` as a string field (hl.meta.lua), and an integer
+    # only works through Lua's implicit number→string coercion.
+    selector = parts[0].strip()
+    table: dict[str, Any] = {
+        "workspace": to_lua_expr(selector) if has_var_marker(selector) else selector
+    }
     for token in parts[1:]:
         key, sep, value = token.partition(":")
         if not sep:
