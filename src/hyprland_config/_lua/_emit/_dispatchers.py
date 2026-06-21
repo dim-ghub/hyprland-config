@@ -371,6 +371,10 @@ _DISPATCHERS: dict[str, Callable[[str, bool], "str | None"]] = {
     "submap": lambda arg, _: f"hl.dsp.submap({quote_string(arg.strip())})",
     "layoutmsg": lambda arg, _: f"hl.dsp.layout({quote_string(arg.strip())})",
     "dpms": lambda arg, _: f"hl.dsp.dpms({quote_string(arg.strip())})",
+    # ``global, APP:SHORTCUT`` triggers an app-registered global shortcut
+    # (hyprland-global-shortcuts-v1 protocol). ``global`` isn't a Lua keyword,
+    # so ``hl.dsp.global(...)`` is valid.
+    "global": lambda arg, _: f"hl.dsp.global({quote_string(arg.strip())})",
     # Parameterized
     "workspace": lambda arg, _: _dispatch_workspace(arg),
     "movetoworkspace": lambda arg, _: _dispatch_movetoworkspace(arg),

@@ -140,6 +140,10 @@ class TestBindDispatchers:
         out = serialize_lua(parse_string("bind = SUPER, J, layoutmsg, togglesplit\n"))
         assert 'hl.dsp.layout("togglesplit")' in out
 
+    def test_global_shortcut(self) -> None:
+        out = serialize_lua(parse_string("bind = SUPER, period, global, caelestia:emoji\n"))
+        assert 'hl.bind("SUPER + period", hl.dsp.global("caelestia:emoji"))' in out
+
     def test_unknown_dispatcher_punts_to_todo(self) -> None:
         # Hyprland's wiki doesn't document a generic legacy-dispatcher escape
         # hatch in the Lua API. Rather than invent one (e.g. wrapping the

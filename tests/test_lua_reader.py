@@ -350,6 +350,10 @@ class TestBindCalls:
         )
         assert _keywords(load_lua(path), "bind") == ["SUPER, V, togglefloating"]
 
+    def test_bind_global_shortcut(self, tmp_path: Path) -> None:
+        path = _write_lua(tmp_path, "hl.bind('SUPER + period', hl.dsp.global('caelestia:emoji'))")
+        assert _keywords(load_lua(path), "bind") == ["SUPER, period, global, caelestia:emoji"]
+
     def test_bind_namespace_as_shorthand_dispatcher(self, tmp_path: Path) -> None:
         # ``hl.dsp.workspace(N)`` is the shorthand form some hand-written
         # configs use. The wrapper has to accept both the call-form here
