@@ -5,6 +5,13 @@ All notable changes to hyprland-config will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.11] - 2026-07-05
+
+### Fixed
+
+- Plugin settings under `hl.plugin` (e.g. `hl.plugin.hyprbars.bar_height = 20`) no longer crash the Lua reader. Unknown plugin namespaces resolve to a no-op sink, so the rest of the config still loads; `hl.plugin.load` keeps recording. https://github.com/BlueManCZ/hyprland-config/pull/2
+- A `require()` of a module that isn't installed no longer aborts the read — the error is recorded and parsing continues past it. Previously everything after the failing `require` was silently dropped. https://github.com/BlueManCZ/hyprland-config/pull/2
+
 ## [0.9.10] - 2026-06-29
 
 ### Fixed
@@ -344,6 +351,7 @@ Initial release - round-trip parser and editor for Hyprland configuration files.
 - Dirty tracking so `save()` only writes files that changed
 - `ParseError` with file name and line number on malformed input
 
+[0.9.11]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.11
 [0.9.10]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.10
 [0.9.9]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.9
 [0.9.8]: https://github.com/BlueManCZ/hyprland-config/releases/tag/v0.9.8

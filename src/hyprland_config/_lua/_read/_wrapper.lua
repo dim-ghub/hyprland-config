@@ -146,18 +146,19 @@ hl.unbind = function(keys) record("unbind", keys) end
 hl.plugin = {
     load = function(path) record("plugin_load", path) end,
 }
-local _dummy_plugin_table = {}
-setmetatable(_dummy_plugin_table, {
-    __index = function(self, key) return _dummy_plugin_table end,
-    __newindex = function(self, key, value) end,
-    __call = function(...) return _dummy_plugin_table end,
+-- Plugins configure through nested namespaces (``hl.plugin.hyprbars.bar_height
+-- = 20``). We can't record those — the reader has no plugin model — but they
+-- must not crash the read: any unknown field under ``hl.plugin`` resolves to a
+-- self-absorbing table that swallows arbitrarily deep reads, writes, and calls.
+-- ``load`` stays a raw field on ``hl.plugin``, so ``__index`` never fires for it.
+local _plugin_sink = {}
+setmetatable(_plugin_sink, {
+    __index = function() return _plugin_sink end,
+    __newindex = function() end,
+    __call = function() return _plugin_sink end,
 })
-
 setmetatable(hl.plugin, {
-    __index = function(self, key)
-        if key == "load" then return rawget(self, key) end
-        return _dummy_plugin_table
-    end
+    __index = function() return _plugin_sink end,
 })
 
 -- Submap declaration runs its body inline so the body's hl.bind calls

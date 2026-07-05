@@ -605,6 +605,9 @@ class TestErrors:
 
     def test_plugin_namespace_ignored(self, tmp_path: Path) -> None:
         src = (
+            "hl.plugin.hyprbars.bar_height = 20\n"  # unguarded nested write
+            "local c = hl.plugin.hyprexpo.columns\n"  # unguarded nested read
+            "hl.plugin.hyprtrails.config().color = 1\n"  # call on plugin field
             "if hl.plugin.some_plugin then\n"
             "    hl.plugin.some_plugin.some_setting = 1\n"
             "end\n"
@@ -612,6 +615,15 @@ class TestErrors:
         )
         doc = load_lua(_write_lua(tmp_path, src))
         assert _assignments(doc) == {"general:gaps_in": "5"}
+
+    def test_plugin_load_still_records(self, tmp_path: Path) -> None:
+        src = (
+            'hl.plugin.load("/usr/lib/hyprland/libhyprbars.so")\n'
+            "hl.plugin.hyprbars.bar_height = 20\n"
+        )
+        doc = load_lua(_write_lua(tmp_path, src))
+        plugins = [ln.value for ln in doc.find_all("plugin")]
+        assert plugins == ["/usr/lib/hyprland/libhyprbars.so"]
 
     def test_syntax_error_surfaces(self, tmp_path: Path) -> None:
         path = _write_lua(tmp_path, "this is not valid lua {{{\n")
